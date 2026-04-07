@@ -258,11 +258,8 @@ Document summaries:
 
         # Filter to summaries that scored for this target
         scored = [s for s in summaries if _target_score(s) >= 0.3]
-        if scored:
-            scored.sort(key=_target_score, reverse=True)
-            summaries = scored[:limit]
-        else:
-            summaries = summaries[:limit]
+        scored.sort(key=_target_score, reverse=True)
+        summaries = scored[:limit]
         if not summaries:
             return SynthesisResult(
                 query=target_name, synthesis_type="target",
