@@ -126,15 +126,16 @@ Document summaries:
         self.summary_scope = summary_scope
 
     def _get_summaries(
-        self, query: Optional[str] = None, limit: int = 50
+        self, query: Optional[str] = None, limit: Optional[int] = 50
     ) -> List[Dict[str, Any]]:
         """Get document summaries from the knowledge store.
 
         Override for domain-specific filtering or formatting.
+        Pass limit=None to fetch all summaries (useful when caller filters).
         """
         if query:
             scope = self.summary_scope or None
-            entries = self.knowledge.search(query, scope=scope, limit=limit)
+            entries = self.knowledge.search(query, scope=scope, limit=limit or 500)
             entries = [
                 e for e in entries
                 if e.tier == Tier.DERIVED
@@ -145,7 +146,9 @@ Document summaries:
                 e
                 for e in self.knowledge.get_by_tier(Tier.DERIVED)
                 if any(t in (e.tags or []) for t in self.summary_tags)
-            ][:limit]
+            ]
+            if limit:
+                entries = entries[:limit]
 
         summaries = []
         for entry in entries:
@@ -236,7 +239,7 @@ Document summaries:
         self, target_name: str, target_description: str, limit: int = 20
     ) -> SynthesisResult:
         """Generate applicability brief for a specific target."""
-        summaries = self._get_summaries(limit=limit * 3)
+        summaries = self._get_summaries(limit=None)  # fetch all, filter by score below
         # Filter to summaries that scored for this target
         scored = [
             s for s in summaries
