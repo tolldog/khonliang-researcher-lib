@@ -28,10 +28,8 @@ def make_summary_entry(entry_id, title, parent_id="", assessments=None, tags=Non
         "parent_id": parent_id,
         "assessments": assessments or {},
     }
-    # Tier.DERIVED
-    entry.tier = MagicMock()
-    entry.tier.value = 3
-    entry.tier.__eq__ = lambda self, other: True  # matches any Tier check
+    from khonliang.knowledge.store import Tier
+    entry.tier = Tier.DERIVED
     return entry
 
 

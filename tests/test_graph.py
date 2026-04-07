@@ -127,14 +127,8 @@ def test_build_entity_graph_with_project_scores():
         tags=["summary"],
         metadata={"parent_id": "parent1", "assessments": {"proj": {"score": 0.8}}},
     )
-    # Fake Tier.DERIVED
-    from unittest.mock import PropertyMock
-    type(summary).tier = PropertyMock(return_value=MagicMock(value=3))
-
     triple_store = make_triple_store(triples)
     knowledge = make_knowledge_store([summary])
-    # Patch Tier.DERIVED check
-    from khonliang.knowledge.store import Tier
     knowledge.get_by_tier.return_value = [summary]
 
     graph = build_entity_graph(triple_store, knowledge=knowledge)
@@ -335,7 +329,6 @@ def test_build_target_scores_propagates():
         FakeTriple("concept_x", "uses", "concept_y", source="paper:paper1"),
     ]
 
-    from khonliang.knowledge.store import Tier
     knowledge = make_knowledge_store([summary])
     triple_store = make_triple_store(triples)
 

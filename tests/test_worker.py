@@ -150,15 +150,15 @@ async def test_stop_halts_run():
     class StoppingWorker(SimpleWorker):
         async def process_item(self, item):
             result = await super().process_item(item)
-            if self.stats["processed"] >= 3:
+            # stats["processed"] is incremented AFTER process_item returns,
+            # so this fires after the 4th item is processed (stats shows 3)
+            if self._stats["processed"] >= 3:
                 self.stop()
             return result
 
     w = StoppingWorker(items=items, pause_between=0)
     stats = await w.run_batch(limit=100)
-    # stop() signals after processing item 3, but item 4 may already
-    # be in flight — the check happens at loop top, so expect 3 or 4
-    assert stats["processed"] in (3, 4)
+    assert stats["processed"] == 4
 
 
 # ---------------------------------------------------------------------------
