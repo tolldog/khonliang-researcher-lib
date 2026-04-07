@@ -236,7 +236,22 @@ Document summaries:
         self, target_name: str, target_description: str, limit: int = 20
     ) -> SynthesisResult:
         """Generate applicability brief for a specific target."""
-        summaries = self._get_summaries(limit=limit)
+        summaries = self._get_summaries(limit=limit * 3)
+        # Filter to summaries that scored for this target
+        scored = [
+            s for s in summaries
+            if target_name in s.get("assessments", {})
+            and isinstance(s["assessments"][target_name], dict)
+            and float(s["assessments"][target_name].get("score", 0)) > 0.3
+        ]
+        if scored:
+            scored.sort(
+                key=lambda s: float(s.get("assessments", {}).get(target_name, {}).get("score", 0)),
+                reverse=True,
+            )
+            summaries = scored[:limit]
+        else:
+            summaries = summaries[:limit]
         if not summaries:
             return SynthesisResult(
                 query=target_name, synthesis_type="target",
