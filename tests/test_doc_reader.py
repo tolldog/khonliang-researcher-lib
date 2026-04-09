@@ -83,6 +83,13 @@ def test_invalid_frontmatter_returns_empty_dict(tmp_path):
     assert doc.frontmatter == {}
 
 
+def test_frontmatter_at_eof(tmp_path):
+    """Frontmatter that ends at EOF (no trailing newline) should still parse."""
+    path = write(tmp_path, "fm_eof.md", "---\ntitle: EOF Doc\n---")
+    doc = LocalDocReader().read(path)
+    assert doc.frontmatter == {"title": "EOF Doc"}
+
+
 def test_frontmatter_stripped_from_body(tmp_path):
     path = write(
         tmp_path,
@@ -111,6 +118,44 @@ def test_index_sections_by_heading(tmp_path):
     assert "Second" in doc.sections
     assert "Subsection" in doc.sections
     assert "first body" in doc.sections["First"]
+
+
+def test_section_swallows_nested_subheadings(tmp_path):
+    """A top-level section spans through its lower-level subheadings,
+    matching the docstring contract ('next heading of same or higher level').
+    """
+    content = (
+        "# Top\nintro\n\n"
+        "## Sub A\nbody A\n\n"
+        "## Sub B\nbody B\n\n"
+        "# Next Top\nnext intro\n"
+    )
+    path = write(tmp_path, "nested.md", content)
+    doc = LocalDocReader().read(path)
+    # Top swallows both subsections
+    assert "intro" in doc.sections["Top"]
+    assert "body A" in doc.sections["Top"]
+    assert "body B" in doc.sections["Top"]
+    assert "next intro" not in doc.sections["Top"]
+    # Subsections still indexed independently
+    assert "body A" in doc.sections["Sub A"]
+    assert "body B" not in doc.sections["Sub A"]
+    assert "body B" in doc.sections["Sub B"]
+
+
+def test_section_h2_does_not_swallow_h2_sibling(tmp_path):
+    """Same-level siblings stop at each other, not at unrelated lower levels."""
+    content = (
+        "## A\nbody A\n\n"
+        "### A.1\ndeep A\n\n"
+        "## B\nbody B\n"
+    )
+    path = write(tmp_path, "siblings.md", content)
+    doc = LocalDocReader().read(path)
+    assert "body A" in doc.sections["A"]
+    assert "deep A" in doc.sections["A"]
+    assert "body B" not in doc.sections["A"]
+    assert "body B" in doc.sections["B"]
 
 
 def test_extract_section_by_heading(tmp_path):
@@ -197,6 +242,35 @@ def test_references_extracted_during_read(tmp_path):
     path = write(tmp_path, "doc.md", "Tracked under fr_developer_28a11ce2.")
     doc = LocalDocReader().read(path)
     assert "fr_developer_28a11ce2" in doc.references
+
+
+def test_references_include_frontmatter(tmp_path):
+    """References should be extracted from the full document including frontmatter."""
+    content = (
+        "---\n"
+        "fr_id: fr_researcher_abc\n"
+        "depends_on: [fr_khonliang_xyz]\n"
+        "---\n"
+        "Body mentions fr_developer_def.\n"
+    )
+    path = write(tmp_path, "fm_refs.md", content)
+    doc = LocalDocReader().read(path)
+    assert "fr_researcher_abc" in doc.references
+    assert "fr_khonliang_xyz" in doc.references
+    assert "fr_developer_def" in doc.references
+
+
+def test_read_and_find_references_consistent(tmp_path):
+    """read().references and find_references() must agree."""
+    content = (
+        "---\nfr_id: fr_a_1\n---\n"
+        "Body mentions fr_b_2.\n"
+    )
+    path = write(tmp_path, "consistent.md", content)
+    reader = LocalDocReader()
+    doc = reader.read(path)
+    direct = reader.find_references(path)
+    assert set(doc.references) == set(direct)
 
 
 # ---------------------------------------------------------------------------

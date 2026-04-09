@@ -49,8 +49,9 @@ async def select_best_of_n(
         client: LLM client with async ``generate(prompt, system, temperature,
             max_tokens, model=...)`` method (e.g. khonliang's OllamaClient).
         prompt: Generation prompt for each candidate.
-        n: Number of candidates to sample. n=1 short-circuits to a single
-            generation at the lower selection_temperature.
+        n: Number of candidates to sample. n<=1 short-circuits to a single
+            generation using ``temperature`` and ``max_tokens`` (the
+            selection step is skipped entirely in this case).
         system: System prompt for the generation calls.
         temperature: Temperature for candidate generation. Higher = more
             diverse candidates.

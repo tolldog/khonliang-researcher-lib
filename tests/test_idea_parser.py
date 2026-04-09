@@ -32,7 +32,9 @@ def test_clean_for_json_removes_unicode():
 def test_clean_for_json_collapses_whitespace():
     text = "lots\n\n\n\nof\n\n\nnewlines"
     cleaned = clean_for_json(text)
-    assert "\n\n\n" not in cleaned
+    # All whitespace (including newlines) collapses to single spaces
+    assert "\n" not in cleaned
+    assert cleaned == "lots of newlines"
 
 
 def test_clean_for_json_preserves_ascii():

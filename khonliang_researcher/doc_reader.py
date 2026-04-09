@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # ``fr_khonliang_03f461fa``, etc. Override per call for other ID schemes.
 DEFAULT_REFERENCE_PATTERN = r"fr_[a-zA-Z0-9_-]+"
 
-_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?\n)---\s*\n", re.DOTALL)
+_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?\n)---\s*(?:\n|$)", re.DOTALL)
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.MULTILINE)
 
 
@@ -56,12 +56,14 @@ class LocalDocReader:
         """Read a file and return its structured content.
 
         Frontmatter is parsed if present, sections are indexed by heading
-        text, and references matching ``reference_pattern`` are extracted.
+        text, and references matching ``reference_pattern`` are extracted
+        from the full document (including frontmatter — IDs are often
+        stored there).
         """
         text = Path(path).read_text(encoding="utf-8")
         frontmatter, body = self._split_frontmatter(text)
         sections = self._index_sections(body)
-        references = self._find_references(body, self.reference_pattern)
+        references = self._find_references(text, self.reference_pattern)
 
         return DocContent(
             path=str(path),
@@ -124,9 +126,10 @@ class LocalDocReader:
         """Index markdown sections by heading text.
 
         Sections include their heading line and span until the next heading
-        of the same or higher level (or end of file). When the same heading
-        text appears multiple times, later occurrences are suffixed with
-        ``#2``, ``#3``, etc.
+        of the same or higher level (or end of file) — so a top-level
+        heading swallows its nested subheadings, while subheadings still
+        get their own entries. When the same heading text appears multiple
+        times, later occurrences are suffixed with ``#2``, ``#3``, etc.
         """
         sections: Dict[str, str] = {}
         matches = list(_HEADING_RE.finditer(body))
@@ -135,8 +138,14 @@ class LocalDocReader:
 
         for i, match in enumerate(matches):
             heading_text = match.group(2).strip()
+            current_level = len(match.group(1))
             start = match.start()
-            end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
+            end = len(body)
+            for next_match in matches[i + 1:]:
+                next_level = len(next_match.group(1))
+                if next_level <= current_level:
+                    end = next_match.start()
+                    break
             content = body[start:end].rstrip()
 
             key = heading_text

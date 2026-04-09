@@ -62,7 +62,8 @@ def clean_for_json(text: str) -> str:
     """Strip content that confuses LLM JSON generation.
 
     Removes: math notation, LaTeX, unicode symbols, excessive whitespace.
-    Keeps: readable English text, numbers, basic punctuation.
+    Keeps: readable English text, numbers, basic punctuation. The result
+    is collapsed to a single line — paragraph breaks are not preserved.
     """
     text = re.sub(r"\$\$.*?\$\$", "[math]", text, flags=re.DOTALL)
     text = re.sub(r"\$[^$]+\$", "[math]", text)
@@ -70,7 +71,6 @@ def clean_for_json(text: str) -> str:
     text = re.sub(r"\\[a-zA-Z]+", "", text)
     text = re.sub(r"[^\x00-\x7F]+", " ", text)
     text = re.sub(r"\s+", " ", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
 

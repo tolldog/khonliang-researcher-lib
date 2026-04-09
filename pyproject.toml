@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "ollama-khonliang @ git+https://github.com/tolldog/ollama-khonliang.git@main",
     "aiohttp>=3.9",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
