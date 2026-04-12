@@ -1,6 +1,5 @@
 """Tests for khonliang_researcher.domain."""
 
-import pytest
 import yaml
 
 from khonliang_researcher.domain import DomainConfig
