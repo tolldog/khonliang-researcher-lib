@@ -1,6 +1,6 @@
-"""khonliang_researcher — document relevance, entity graphs, and synthesis.
+"""khonliang_researcher — SDK for building domain-scoped research agents.
 
-Generic research capabilities for khonliang-based projects:
+Layer 1 — Primitives:
 - RelevanceScorer: embedding-based relevance scoring with adaptive learning
 - Entity graph: build, traverse, and query relationship graphs
 - BaseQueueWorker: background processing with retry tracking
@@ -8,6 +8,29 @@ Generic research capabilities for khonliang-based projects:
 - BaseIdeaParser: decompose informal text into claims and search queries
 - select_best_of_n: self-distillation for diverse candidate selection
 - LocalDocReader: structure-aware reads of local docs (no LLM, no persistence)
+
+Layer 2 — Research agent framework:
+- BaseResearchAgent: bus agent with standard research skills (~20 skills built-in)
+- DomainConfig: evaluation rules, engines, prompts, output types per domain
+- EngineRegistry: pluggable search engines (web_search + web_fetch ship as defaults)
+
+Usage (generic researcher — zero config)::
+
+    from khonliang_researcher import BaseResearchAgent
+    agent = BaseResearchAgent.from_cli()
+    asyncio.run(agent.start())
+
+Usage (domain researcher — add specialization)::
+
+    from khonliang_researcher import BaseResearchAgent, DomainConfig
+
+    class GenealogyResearcher(BaseResearchAgent):
+        agent_type = "genealogy-researcher"
+        domain = DomainConfig(
+            name="genealogy",
+            rules=["Apply the Genealogical Proof Standard"],
+            engines=["google", "familysearch"],
+        )
 """
 
 from khonliang_researcher.relevance import RelevanceScorer, cosine_similarity
@@ -38,6 +61,15 @@ from khonliang_researcher.doc_reader import (
     DocContent,
     DEFAULT_REFERENCE_PATTERN,
 )
+from khonliang_researcher.domain import DomainConfig
+from khonliang_researcher.engines import (
+    BaseSearchEngine,
+    EngineRegistry,
+    SearchResult,
+    WebFetchEngine,
+    WebSearchEngine,
+)
+from khonliang_researcher.agent import BaseResearchAgent
 
 # Backward compatibility aliases
 ConceptNode = EntityNode
@@ -76,6 +108,16 @@ __all__ = [
     "LocalDocReader",
     "DocContent",
     "DEFAULT_REFERENCE_PATTERN",
+    # Domain config
+    "DomainConfig",
+    # Engines
+    "BaseSearchEngine",
+    "EngineRegistry",
+    "SearchResult",
+    "WebFetchEngine",
+    "WebSearchEngine",
+    # Research agent
+    "BaseResearchAgent",
     # Backward compat
     "ConceptNode",
     "build_project_scores",
