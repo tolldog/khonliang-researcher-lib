@@ -1,10 +1,11 @@
 [project]
 name = "khonliang-researcher-lib"
-version = "0.1.0"
-description = "Document relevance scoring, entity graphs, and synthesis for khonliang"
+version = "0.2.0"
+description = "SDK for building domain-scoped research agents on the khonliang platform"
 requires-python = ">=3.11"
 dependencies = [
     "ollama-khonliang @ git+https://github.com/tolldog/ollama-khonliang.git@main",
+    "khonliang-bus-lib",
     "aiohttp>=3.9",
     "pyyaml>=6.0",
 ]
