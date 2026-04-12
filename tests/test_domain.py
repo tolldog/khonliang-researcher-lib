@@ -1,7 +1,5 @@
 """Tests for khonliang_researcher.domain."""
 
-from pathlib import Path
-
 import pytest
 import yaml
 

@@ -102,7 +102,7 @@ class DomainConfig:
     
     # Search behavior
     engines: list[str] = field(default_factory=list)
-    #   names of registered engines: "arxiv", "google", "familysearch"
+    #   names of registered engines: "arxiv", "web_search", "familysearch"
     
     # Output behavior
     output_type: str = "concept_bundles"
@@ -130,7 +130,7 @@ Interface for pluggable search engines. Domain researchers add their own.
 
 ```python
 class BaseSearchEngine(ABC):
-    name: str                           # "arxiv", "google", "familysearch"
+    name: str                           # "arxiv", "web_search", "familysearch"
     description: str
     
     @abstractmethod
@@ -146,7 +146,7 @@ class SearchResult:
 ```
 
 Standard engines shipped with researcher-lib:
-- `GoogleEngine` — DuckDuckGo instant answers (no API key needed)
+- `WebSearchEngine` — DuckDuckGo instant answers (no API key needed)
 - `WebFetchEngine` — fetch any URL, extract text
 
 Domain-specific engines (NOT in researcher-lib):
@@ -221,7 +221,7 @@ class BaseResearchAgent(BaseAgent):
         )
         
         # Register default engines
-        self.engine_registry.register(GoogleEngine())
+        self.engine_registry.register(WebSearchEngine())
         self.engine_registry.register(WebFetchEngine())
         
         # Register domain-specific engines from config
@@ -422,7 +422,7 @@ researcher-lib (this plan)
 - Depends on bus-lib (add to pyproject.toml)
 - Implements ~22 generic research skills as @handler methods
 - DomainConfig dataclass with from_yaml + generic() factory
-- BaseSearchEngine + EngineRegistry + GoogleEngine + WebFetchEngine
+- BaseSearchEngine + EngineRegistry + WebSearchEngine + WebFetchEngine
 - Tests: test_agent.py with AgentTestHarness from bus-lib
 
 ### Phase 2: Refactor current researcher to extend BaseResearchAgent

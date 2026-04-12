@@ -20,7 +20,7 @@ A domain researcher adds specialization::
         domain = DomainConfig(
             name="genealogy",
             rules=["Apply the Genealogical Proof Standard"],
-            engines=["google", "familysearch"],
+            engines=["web_search", "familysearch"],
         )
 """
 
@@ -44,7 +44,7 @@ from khonliang_researcher.engines import (
     WebSearchEngine,
 )
 from khonliang_researcher.relevance import RelevanceScorer
-from khonliang_researcher.synthesizer import BaseSynthesizer, SynthesisResult
+from khonliang_researcher.synthesizer import BaseSynthesizer
 
 logger = logging.getLogger(__name__)
 
@@ -191,14 +191,12 @@ class BaseResearchAgent(BaseAgent):
             # Search
             Skill("find_relevant", "Search the corpus by topic", {
                 "query": {"type": "string", "required": True},
-                "detail": {"type": "string", "default": "brief"},
             }),
             Skill("knowledge_search", "Full-text search across stored content", {
                 "query": {"type": "string", "required": True},
             }),
             Skill("paper_context", "Build evidence context for prompt injection", {
                 "query": {"type": "string", "required": True},
-                "detail": {"type": "string", "default": "brief"},
             }),
 
             # Ingestion (single items, on-demand)
@@ -214,9 +212,7 @@ class BaseResearchAgent(BaseAgent):
             }),
 
             # Distillation
-            Skill("start_distillation", "Process the pending distillation queue", {
-                "batch_size": {"type": "integer", "default": 0},
-            }),
+            Skill("start_distillation", "Process the pending distillation queue", {}),
 
             # Ideas pipeline
             Skill("research_idea", "Find papers backing an idea's claims", {
@@ -229,21 +225,19 @@ class BaseResearchAgent(BaseAgent):
             # Synthesis
             Skill("synthesize_topic", "Cross-document analysis of a theme", {
                 "topic": {"type": "string", "required": True},
-                "detail": {"type": "string", "default": "brief"},
             }),
             Skill("synthesize_project", "Applicability brief for a project", {
                 "project": {"type": "string", "required": True},
-                "detail": {"type": "string", "default": "brief"},
             }),
 
             # Scoring
             Skill("score_relevance", "Score a document's relevance to projects", {
                 "entry_id": {"type": "string", "required": True},
-                "detail": {"type": "string", "default": "brief"},
             }),
             Skill("concepts_for_project", "Concepts ranked by project relevance", {
                 "project": {"type": "string", "required": True},
-                "detail": {"type": "string", "default": "brief"},
+                "min_score": {"type": "number", "default": 0.4},
+                "limit": {"type": "integer", "default": 30},
             }),
 
             # Concept bundling (generic — no FRs)
@@ -320,14 +314,15 @@ class BaseResearchAgent(BaseAgent):
         if not results:
             return {"error": f"Could not fetch: {url}"}
         r = results[0]
+        content = r.snippet  # WebFetchEngine now returns full text in snippet
         entry = self.knowledge.add_entry(
             title=r.title,
-            content=r.snippet,
+            content=content,
             source=url,
             tier=Tier.IMPORTED,
             tags=["paper"],
         )
-        return {"result": {"id": entry.id, "title": r.title, "chars": len(r.snippet)}}
+        return {"result": {"id": entry.id, "title": r.title, "chars": len(content)}}
 
     @handler("ingest_file")
     async def handle_ingest_file(self, args: dict) -> dict:

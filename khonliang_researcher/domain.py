@@ -38,7 +38,7 @@ class DomainConfig:
     prompts: dict[str, str] = field(default_factory=dict)
 
     # Search engines to register at startup. Names must match registered
-    # engine classes (e.g., "google", "arxiv", "familysearch").
+    # engine classes (e.g., "web_search", "arxiv", "familysearch").
     engines: list[str] = field(default_factory=list)
 
     # What synergize_concepts produces. The generic output is "concept_bundles".
@@ -59,9 +59,9 @@ class DomainConfig:
         return cls(name="generic")
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> DomainConfig:
-        """Build from a parsed YAML/dict ``domain:`` section."""
-        if not data:
+    def from_dict(cls, data: Optional[dict[str, Any]]) -> DomainConfig:
+        """Build from a parsed YAML/dict ``domain:`` section or ``None``."""
+        if data is None:
             return cls.generic()
         return cls(
             name=data.get("name", "generic"),
@@ -104,7 +104,15 @@ class DomainConfig:
 
     @property
     def is_generic(self) -> bool:
-        return self.name == "generic" and not self.rules and not self.engines
+        return (
+            self.name == "generic"
+            and not self.rules
+            and not self.prompts
+            and not self.engines
+            and self.output_type == "concept_bundles"
+            and not self.knowledge_sources
+            and not self.relevance_keywords
+        )
 
     def rules_prompt_fragment(self) -> str:
         """Format domain rules for prompt injection."""

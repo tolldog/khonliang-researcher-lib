@@ -29,7 +29,7 @@ Usage (domain researcher — add specialization)::
         domain = DomainConfig(
             name="genealogy",
             rules=["Apply the Genealogical Proof Standard"],
-            engines=["google", "familysearch"],
+            engines=["web_search", "familysearch"],
         )
 """
 

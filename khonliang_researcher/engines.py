@@ -116,7 +116,7 @@ class EngineRegistry:
         results_per_engine = await asyncio.gather(*tasks, return_exceptions=True)
         merged: list[SearchResult] = []
         for result in results_per_engine:
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 logger.warning("Engine search failed: %s", result)
                 continue
             merged.extend(result)
@@ -266,8 +266,11 @@ class WebFetchEngine(BaseSearchEngine):
             SearchResult(
                 title=title,
                 url=query,
-                snippet=clean[:500],
+                snippet=clean,
                 source="web_fetch",
-                metadata={"full_text_length": len(clean)},
+                metadata={
+                    "full_text_length": len(clean),
+                    "preview": clean[:500],
+                },
             )
         ]

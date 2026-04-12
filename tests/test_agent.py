@@ -1,7 +1,5 @@
 """Tests for khonliang_researcher.agent — BaseResearchAgent construction and skills."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
-
 import pytest
 
 from khonliang_researcher.agent import BaseResearchAgent
