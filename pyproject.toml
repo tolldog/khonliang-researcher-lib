@@ -1,6 +1,6 @@
 [project]
 name = "khonliang-researcher-lib"
-version = "0.2.0"
+version = "0.3.0"
 description = "SDK for building domain-scoped research agents on the khonliang platform"
 requires-python = ">=3.11"
 dependencies = [
@@ -12,6 +12,13 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8.0", "pytest-asyncio>=0.24"]
+fast-knn = [
+    # VectorIndex uses sqlite-vec for fast KNN. The pip package bundles
+    # prebuilt binaries per platform (Linux x86_64/arm64, macOS, Windows) —
+    # no system install required. Code falls back to brute-force cosine when
+    # this optional extra is not installed or cannot load.
+    "sqlite-vec>=0.1.0",
+]
 
 [tool.setuptools.packages.find]
 include = ["khonliang_researcher*"]
