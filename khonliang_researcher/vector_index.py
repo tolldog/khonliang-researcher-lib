@@ -151,8 +151,13 @@ class VectorIndex:
     # -- schema --
 
     def _init_schema(self) -> None:
-        """Create the plain embeddings table. vec0 table is created lazily
-        on first insert once we know the dimension."""
+        """Create the plain embeddings table and detect any existing dimension.
+
+        If the DB already has embeddings from a prior instance, pick up the
+        dimension from there so dimension-mismatch checks work immediately
+        on reopen. The vec0 virtual table is created lazily on first insert
+        once we have a dimension (new DBs) or at re-open (existing DBs).
+        """
         conn = sqlite3.connect(self.db_path)
         try:
             conn.execute(
@@ -167,14 +172,28 @@ class VectorIndex:
                 """
             )
             conn.commit()
+
+            # If embeddings already exist, pick up the established dimension.
+            row = conn.execute(
+                f"SELECT dim FROM {self._embeddings_table} LIMIT 1"
+            ).fetchone()
+            if row is not None:
+                self.backend.dimension = int(row[0])
         finally:
             conn.close()
 
-    def _ensure_vec_table(self, dimension: int) -> None:
-        """Create the sqlite-vec virtual table with the right dimension."""
-        if self.backend.kind != "sqlite-vec":
-            return
+        # With a known dimension on reopen, materialize the vec0 table now.
         if self.backend.dimension is not None:
+            self._ensure_vec_table(self.backend.dimension)
+
+    def _ensure_vec_table(self, dimension: int) -> None:
+        """Create the sqlite-vec virtual table with the right dimension.
+
+        Idempotent — safe to call repeatedly. Falls back to brute-force if
+        the create fails at runtime (e.g., sqlite-vec loads but the vec0
+        module is missing for some reason).
+        """
+        if self.backend.kind != "sqlite-vec":
             return
         conn = _open_conn(self.db_path, enable_vec=True)
         try:
@@ -185,7 +204,6 @@ class VectorIndex:
                 """
             )
             conn.commit()
-            self.backend.dimension = dimension
         except sqlite3.OperationalError as e:
             logger.warning(
                 "sqlite-vec table creation failed (%s) — falling back to brute-force",
@@ -224,8 +242,11 @@ class VectorIndex:
         (when available). Validates dimension consistency."""
         dim = len(vec)
         if self.backend.dimension is None:
-            self.backend.dimension = dim
+            # First insert establishes the dimension. Ensure the vec0 table
+            # exists BEFORE recording the dimension, so a failed create
+            # flips the backend to brute-force cleanly.
             self._ensure_vec_table(dim)
+            self.backend.dimension = dim
         elif self.backend.dimension != dim:
             raise ValueError(
                 f"Dimension mismatch: index has {self.backend.dimension}, "
@@ -293,33 +314,28 @@ class VectorIndex:
     def _search_sqlite_vec(
         self, query_vec: list[float], k: int
     ) -> list[tuple[str, float]]:
-        """KNN via sqlite-vec MATCH operator. Maps rowids back to entry_ids."""
+        """KNN via sqlite-vec MATCH operator.
+
+        vec0 returns rowids (we assigned them as stable hashes of entry_ids).
+        We fetch candidate rowids from vec0, then map back to entry_ids by
+        scanning the plain table for any row whose entry_id hashes to one
+        of those rowids. Finally we re-score with true cosine similarity
+        against the authoritative BLOBs — vec0 uses L2 distance, not cosine.
+        """
         blob = _encode_vector(query_vec)
         conn = _open_conn(self.db_path, enable_vec=True)
         try:
-            rows = conn.execute(
+            # Fetch top-k rowids from vec0. Request more than k to allow for
+            # rowid collisions (astronomically rare) or partial coverage.
+            vec_rows = conn.execute(
                 f"""
-                SELECT e.entry_id, v.distance
-                FROM {self._vec_table} v
-                JOIN {self._embeddings_table} e
-                  ON _stable_rowid(e.entry_id) IS NULL  -- placeholder, filled in Python
-                WHERE v.embedding MATCH ?
-                ORDER BY v.distance
+                SELECT rowid FROM {self._vec_table}
+                WHERE embedding MATCH ?
+                ORDER BY distance
                 LIMIT ?
                 """,
-                (blob, k),
+                (blob, k * 2),
             ).fetchall()
-            # sqlite-vec's distance is L2 distance; convert to a similarity-like score.
-            # Since we joined on a placeholder, do rowid→entry_id mapping ourselves.
-            # Simpler: fetch all candidate entry_ids via vec0 first, then lookup.
-            # Fallback to brute-force for correctness if the JOIN trick doesn't work.
-            if not rows:
-                return self._search_brute(query_vec, k)
-            # Post-process: convert distance to cosine similarity.
-            # sqlite-vec stores L2 distance; for normalized vectors L2² = 2(1 - cos).
-            # We don't assume normalization here, so we re-compute cosine from the
-            # plain table for correctness.
-            return self._rescore_rows(query_vec, [r[0] for r in rows])
         except sqlite3.OperationalError as e:
             logger.warning(
                 "sqlite-vec search failed (%s) — falling back to brute-force", e
@@ -328,31 +344,34 @@ class VectorIndex:
         finally:
             conn.close()
 
-    def _rescore_rows(
-        self, query_vec: list[float], entry_ids: list[str]
+        if not vec_rows:
+            # vec0 table exists but is empty (e.g., rows in plain table weren't
+            # mirrored). Fall back to brute-force for correctness.
+            return self._search_brute(query_vec, k)
+
+        candidate_rowids = {int(r[0]) for r in vec_rows}
+        return self._rescore_by_rowids(query_vec, candidate_rowids, k)
+
+    def _rescore_by_rowids(
+        self, query_vec: list[float], rowids: set[int], k: int
     ) -> list[tuple[str, float]]:
-        """Re-score vec0 candidates with true cosine similarity."""
-        if not entry_ids:
-            return []
-        placeholders = ",".join("?" * len(entry_ids))
+        """Walk the plain table, keep rows whose stable_rowid is in ``rowids``,
+        and re-score them with cosine similarity."""
         conn = sqlite3.connect(self.db_path)
         try:
-            rows = conn.execute(
-                f"""
-                SELECT entry_id, embedding
-                FROM {self._embeddings_table}
-                WHERE entry_id IN ({placeholders})
-                """,
-                entry_ids,
+            all_rows = conn.execute(
+                f"SELECT entry_id, embedding FROM {self._embeddings_table}"
             ).fetchall()
         finally:
             conn.close()
-        hits = [
-            (eid, _cosine_similarity(query_vec, _decode_vector(blob)))
-            for eid, blob in rows
-        ]
+
+        hits = []
+        for eid, blob in all_rows:
+            if _stable_rowid(eid) in rowids:
+                hits.append((eid, _cosine_similarity(query_vec, _decode_vector(blob))))
+
         hits.sort(key=lambda x: -x[1])
-        return hits
+        return hits[:k]
 
     def _search_brute(
         self, query_vec: list[float], k: int

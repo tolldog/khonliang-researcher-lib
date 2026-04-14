@@ -8,14 +8,15 @@ dependencies = [
     "khonliang-bus-lib",
     "aiohttp>=3.9",
     "pyyaml>=6.0",
+    # VectorIndex uses sqlite-vec for fast KNN. The pip package bundles
+    # prebuilt binaries per platform (Linux x86_64/arm64, macOS, Windows) —
+    # no system install required. Code falls back to brute-force cosine if
+    # the load ever fails, but this ensures the fast path is the default.
+    "sqlite-vec>=0.1.0",
 ]
 
 [project.optional-dependencies]
 test = ["pytest>=8.0", "pytest-asyncio>=0.24"]
-# Optional fast KNN backend. When installed, VectorIndex uses sqlite-vec's
-# vec0 virtual table; otherwise it falls back to brute-force cosine.
-# The pip package bundles prebuilt binaries per platform — no system deps.
-fast-knn = ["sqlite-vec>=0.1.0"]
 
 [tool.setuptools.packages.find]
 include = ["khonliang_researcher*"]
