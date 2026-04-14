@@ -132,11 +132,23 @@ class BaseResearchAgent(BaseAgent):
             threshold=config.get("relevance_threshold", 0.3),
         )
 
-        # Synthesizer
+        # Synthesizer — augment SYSTEM_PROMPT with domain rules if configured
         self.synthesizer = BaseSynthesizer(
             self.knowledge, self.triples, self.pool,
             summary_tags=["summary"],
         )
+        if self.domain.has_rules:
+            # Instance-level override of class-level SYSTEM_PROMPT
+            self.synthesizer.SYSTEM_PROMPT = (
+                BaseSynthesizer.SYSTEM_PROMPT.rstrip()
+                + "\n\n"
+                + self.domain.rules_prompt_fragment()
+            )
+            logger.info(
+                "Injected %d domain rule(s) into synthesizer SYSTEM_PROMPT (domain=%s)",
+                len(self.domain.rules),
+                self.domain.name,
+            )
 
         # Default engines
         self.engine_registry.register(WebSearchEngine())
@@ -539,10 +551,15 @@ class BaseResearchAgent(BaseAgent):
                 f"Concepts:\n{concepts_text}"
             )
             client = self.pool.get_client("summarizer")
+            system_prompt = (
+                "You are a research analyst. Group related concepts into bundles. "
+                "Output structured bundles, not feature requests."
+            )
+            if self.domain.has_rules:
+                system_prompt += "\n\n" + self.domain.rules_prompt_fragment()
             bundle_text = await client.generate(
                 prompt=prompt,
-                system="You are a research analyst. Group related concepts into bundles. "
-                       "Output structured bundles, not feature requests.",
+                system=system_prompt,
                 temperature=0.3,
                 max_tokens=4000,
             )

@@ -178,3 +178,117 @@ def test_engine_registry_initialized():
     agent = BaseResearchAgent.__new__(BaseResearchAgent)
     agent.__init__(agent_id="test", bus_url="http://test", config_path="")
     assert isinstance(agent.engine_registry, EngineRegistry)
+
+
+# ---------------------------------------------------------------------------
+# Domain rules → synthesizer SYSTEM_PROMPT injection
+# ---------------------------------------------------------------------------
+
+
+def _make_minimal_config(tmp_path, domain_config=None):
+    """Build a minimal YAML config file for agent _setup() tests."""
+    import yaml
+
+    config = {
+        "db_path": str(tmp_path / "test.db"),
+        "models": {},
+        "projects": {},
+    }
+    if domain_config:
+        config["domain"] = domain_config
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(config))
+    return str(path)
+
+
+@pytest.mark.asyncio
+async def test_domain_rules_injected_into_synthesizer(tmp_path):
+    """When DomainConfig has rules, they should be appended to the
+    synthesizer's SYSTEM_PROMPT at setup time."""
+    from khonliang_researcher.synthesizer import BaseSynthesizer
+
+    config_path = _make_minimal_config(tmp_path, domain_config={
+        "name": "genealogy",
+        "rules": [
+            "Apply the Genealogical Proof Standard",
+            "Distinguish primary vs derivative sources",
+        ],
+    })
+
+    agent = BaseResearchAgent(
+        agent_id="test-genealogy",
+        bus_url="http://test",
+        config_path=config_path,
+    )
+    await agent._setup()
+
+    base_prompt = BaseSynthesizer.SYSTEM_PROMPT
+    assert agent.synthesizer.SYSTEM_PROMPT != base_prompt
+    assert "Apply the Genealogical Proof Standard" in agent.synthesizer.SYSTEM_PROMPT
+    assert "Distinguish primary vs derivative sources" in agent.synthesizer.SYSTEM_PROMPT
+    assert "Domain rules (genealogy)" in agent.synthesizer.SYSTEM_PROMPT
+    # The base prompt content should still be there (augmented, not replaced)
+    assert base_prompt.rstrip() in agent.synthesizer.SYSTEM_PROMPT
+
+
+@pytest.mark.asyncio
+async def test_no_domain_rules_leaves_synthesizer_prompt_unchanged(tmp_path):
+    """Generic researcher (no rules) gets the default SYSTEM_PROMPT unchanged."""
+    from khonliang_researcher.synthesizer import BaseSynthesizer
+
+    config_path = _make_minimal_config(tmp_path)  # no domain config
+
+    agent = BaseResearchAgent(
+        agent_id="test-generic",
+        bus_url="http://test",
+        config_path=config_path,
+    )
+    await agent._setup()
+
+    # No rules means no augmentation — instance attr equals class attr
+    assert agent.synthesizer.SYSTEM_PROMPT == BaseSynthesizer.SYSTEM_PROMPT
+
+
+@pytest.mark.asyncio
+async def test_empty_domain_rules_does_not_inject(tmp_path):
+    """A domain with an empty rules list should not augment the prompt."""
+    from khonliang_researcher.synthesizer import BaseSynthesizer
+
+    config_path = _make_minimal_config(tmp_path, domain_config={
+        "name": "custom",
+        "rules": [],
+    })
+
+    agent = BaseResearchAgent(
+        agent_id="test-empty",
+        bus_url="http://test",
+        config_path=config_path,
+    )
+    await agent._setup()
+
+    assert agent.synthesizer.SYSTEM_PROMPT == BaseSynthesizer.SYSTEM_PROMPT
+
+
+@pytest.mark.asyncio
+async def test_domain_rules_does_not_mutate_class_attribute(tmp_path):
+    """Instance-level override must not leak into BaseSynthesizer class."""
+    from khonliang_researcher.synthesizer import BaseSynthesizer
+
+    original_class_prompt = BaseSynthesizer.SYSTEM_PROMPT
+
+    config_path = _make_minimal_config(tmp_path, domain_config={
+        "name": "test",
+        "rules": ["Rule that should not leak"],
+    })
+
+    agent = BaseResearchAgent(
+        agent_id="test-isolation",
+        bus_url="http://test",
+        config_path=config_path,
+    )
+    await agent._setup()
+
+    # After setup, class attribute must be unchanged
+    assert BaseSynthesizer.SYSTEM_PROMPT == original_class_prompt
+    # But the instance has an augmented version
+    assert "Rule that should not leak" in agent.synthesizer.SYSTEM_PROMPT
