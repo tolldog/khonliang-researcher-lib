@@ -37,14 +37,20 @@ Usage::
 
 from __future__ import annotations
 
-import array
+import hashlib
 import logging
 import math
+import re
 import sqlite3
 import struct
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional, Protocol
+
+
+# SQL identifier validator: alphanumerics + underscore, must start with letter
+# or underscore. Keeps the f-string interpolation of ``table`` safe.
+_SAFE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 logger = logging.getLogger(__name__)
 
@@ -71,15 +77,21 @@ class _Embedder(Protocol):
 
 
 def _encode_vector(vec: list[float]) -> bytes:
-    """Pack a float32 vector as a little-endian BLOB."""
-    return array.array("f", vec).tobytes()
+    """Pack a float32 vector as a little-endian BLOB.
+
+    Explicit ``<f`` ensures portability — the BLOB written on a big-endian
+    box decodes correctly on a little-endian box and vice versa.
+    """
+    return struct.pack(f"<{len(vec)}f", *vec)
 
 
 def _decode_vector(blob: bytes) -> list[float]:
-    """Unpack a float32 BLOB into a list."""
-    return list(array.array("f").frombytes(blob) or struct.unpack(
-        f"{len(blob) // 4}f", blob
-    ))
+    """Unpack a little-endian float32 BLOB into a list."""
+    if len(blob) % 4 != 0:
+        raise ValueError(
+            f"Vector blob length must be a multiple of 4 bytes, got {len(blob)}"
+        )
+    return list(struct.unpack(f"<{len(blob) // 4}f", blob))
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -135,6 +147,12 @@ class VectorIndex:
         *,
         table: str = "vector_index",
     ):
+        if not _SAFE_IDENTIFIER.match(table):
+            raise ValueError(
+                f"Invalid table name {table!r}: must match [A-Za-z_][A-Za-z0-9_]*. "
+                "The value is interpolated into SQL identifiers, so unsafe "
+                "input would enable SQL injection."
+            )
         self.db_path = db_path
         self.embedder = embedder
         self.table = table
@@ -155,8 +173,12 @@ class VectorIndex:
 
         If the DB already has embeddings from a prior instance, pick up the
         dimension from there so dimension-mismatch checks work immediately
-        on reopen. The vec0 virtual table is created lazily on first insert
-        once we have a dimension (new DBs) or at re-open (existing DBs).
+        on reopen. Validates that all existing rows share a single dimension
+        — corrupted indexes (mixed dims from a buggy past write) are
+        rejected loudly rather than silently accepted.
+
+        The vec0 virtual table is created lazily on first insert once we
+        have a dimension (new DBs) or at re-open (existing DBs).
         """
         conn = sqlite3.connect(self.db_path)
         try:
@@ -167,18 +189,39 @@ class VectorIndex:
                     embedding  BLOB NOT NULL,
                     dim        INTEGER NOT NULL,
                     text_hash  TEXT,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
+            # Backfill updated_at on indexes created with the older schema.
+            try:
+                conn.execute(
+                    f"ALTER TABLE {self._embeddings_table} ADD COLUMN updated_at TEXT"
+                )
+                conn.execute(
+                    f"UPDATE {self._embeddings_table} SET updated_at = created_at "
+                    "WHERE updated_at IS NULL"
+                )
+            except sqlite3.OperationalError:
+                # Column already exists — older instance also added it, fine.
+                pass
             conn.commit()
 
-            # If embeddings already exist, pick up the established dimension.
-            row = conn.execute(
-                f"SELECT dim FROM {self._embeddings_table} LIMIT 1"
-            ).fetchone()
-            if row is not None:
-                self.backend.dimension = int(row[0])
+            # If embeddings already exist, pick up the established dimension
+            # AND validate that all rows agree. Mixed dims = corrupt index.
+            dims = conn.execute(
+                f"SELECT DISTINCT dim FROM {self._embeddings_table}"
+            ).fetchall()
+            if len(dims) > 1:
+                raise RuntimeError(
+                    f"Vector index corrupt: {self._embeddings_table} has mixed "
+                    f"dimensions {sorted(int(d[0]) for d in dims)}. "
+                    "An earlier write must have bypassed dimension enforcement. "
+                    "Drop the table or quarantine and rebuild."
+                )
+            if dims:
+                self.backend.dimension = int(dims[0][0])
         finally:
             conn.close()
 
@@ -224,7 +267,7 @@ class VectorIndex:
         vec = await self.embedder._embed(text)
         if not vec:
             return False
-        self._store_embedding(entry_id, vec, text_hash=str(hash(text)))
+        self._store_embedding(entry_id, vec, text_hash=_text_hash(text))
         return True
 
     async def index_batch(self, items: list[tuple[str, str]]) -> int:
@@ -258,13 +301,14 @@ class VectorIndex:
         try:
             conn.execute(
                 f"""
-                INSERT INTO {self._embeddings_table} (entry_id, embedding, dim, text_hash)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO {self._embeddings_table}
+                    (entry_id, embedding, dim, text_hash, created_at, updated_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 ON CONFLICT(entry_id) DO UPDATE SET
                     embedding = excluded.embedding,
                     dim = excluded.dim,
                     text_hash = excluded.text_hash,
-                    created_at = CURRENT_TIMESTAMP
+                    updated_at = CURRENT_TIMESTAMP
                 """,
                 (entry_id, blob, dim, text_hash),
             )
@@ -435,28 +479,39 @@ def _load_sqlite_vec(conn: sqlite3.Connection) -> bool:
        This is the recommended install path — ``pip install sqlite-vec``.
     2. A system-installed ``vec0`` extension on the loader path.
 
-    Returns True on success, False if neither is available.
+    Returns True on success, False if neither is available. The connection's
+    extension-loading flag is always reset to False before return, even when
+    the load raises mid-call.
     """
     try:
         import sqlite_vec  # type: ignore[import-not-found]
 
-        conn.enable_load_extension(True)
-        sqlite_vec.load(conn)
-        conn.enable_load_extension(False)
-        return True
+        try:
+            conn.enable_load_extension(True)
+            sqlite_vec.load(conn)
+            return True
+        except (sqlite3.OperationalError, AttributeError) as e:
+            logger.debug("sqlite-vec python package present but load failed (%s)", e)
+        finally:
+            try:
+                conn.enable_load_extension(False)
+            except (sqlite3.OperationalError, AttributeError):
+                pass
     except ImportError:
         pass  # try system install next
-    except (sqlite3.OperationalError, AttributeError) as e:
-        logger.debug("sqlite-vec python package present but load failed (%s)", e)
 
     try:
         conn.enable_load_extension(True)
         conn.load_extension("vec0")
-        conn.enable_load_extension(False)
         return True
     except (sqlite3.OperationalError, AttributeError) as e:
         logger.debug("sqlite-vec unavailable (%s)", e)
         return False
+    finally:
+        try:
+            conn.enable_load_extension(False)
+        except (sqlite3.OperationalError, AttributeError):
+            pass
 
 
 def _detect_backend(db_path: str) -> _Backend:
@@ -483,11 +538,18 @@ def _stable_rowid(entry_id: str) -> int:
     requires integer rowids). Collisions are extremely unlikely at the
     scales this library handles."""
     # SHA-1 is fine for a hash key; not cryptographic use.
-    import hashlib
-
     digest = hashlib.sha1(entry_id.encode("utf-8")).digest()
     # Take the first 8 bytes, unsigned, mask to 63 bits to keep it positive.
     return int.from_bytes(digest[:8], "big") & ((1 << 63) - 1)
+
+
+def _text_hash(text: str) -> str:
+    """Stable cache key for indexed text. Uses SHA-256 (not Python's
+    randomized ``hash()``) so the value is comparable across processes
+    and survives pickling/persistence — useful for downstream consumers
+    that want to detect "did this text change since I last indexed it?".
+    """
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 # ---------------------------------------------------------------------------

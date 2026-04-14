@@ -17,6 +17,7 @@ from khonliang_researcher.vector_index import (
     _cosine_similarity,
     _decode_vector,
     _encode_vector,
+    _text_hash,
     reciprocal_rank_fusion,
 )
 
@@ -103,6 +104,37 @@ def test_cosine_mismatched_length_returns_zero():
     assert _cosine_similarity([1.0, 0.0], [1.0]) == 0.0
 
 
+def test_decode_rejects_partial_float():
+    """BLOB must be a multiple of 4 bytes (float32)."""
+    with pytest.raises(ValueError, match="multiple of 4"):
+        _decode_vector(b"\x00\x01\x02")  # 3 bytes
+
+
+def test_encode_decode_is_little_endian():
+    """Explicit little-endian so BLOBs round-trip across architectures."""
+    # 1.0 as a little-endian float32 is 0x3F800000 → bytes 00 00 80 3F
+    blob = _encode_vector([1.0])
+    assert blob == b"\x00\x00\x80\x3f"
+    assert _decode_vector(blob) == [pytest.approx(1.0)]
+
+
+def test_text_hash_is_stable_and_deterministic():
+    """Unlike Python's hash(), _text_hash must be stable across processes
+    and runs so it's usable as a persistent cache key."""
+    import subprocess
+    import sys
+
+    h1 = _text_hash("hello world")
+    h2 = _text_hash("hello world")
+    assert h1 == h2
+    # Cross-process stability: hash in a subprocess returns the same value
+    code = "from khonliang_researcher.vector_index import _text_hash; print(_text_hash('hello world'))"
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True
+    )
+    assert result.stdout.strip() == h1
+
+
 # ---------------------------------------------------------------------------
 # VectorIndex — init and schema
 # ---------------------------------------------------------------------------
@@ -122,6 +154,108 @@ def test_init_is_idempotent(tmp_path):
     # Reopening an existing index must not error
     idx2 = VectorIndex(db, MockEmbedder())
     assert idx2.count() == 0
+
+
+def test_init_rejects_unsafe_table_name(tmp_path):
+    """Table name is f-string-interpolated into SQL, so it must be
+    validated to prevent SQL injection via a hostile constructor arg."""
+    with pytest.raises(ValueError, match="Invalid table name"):
+        VectorIndex(
+            str(tmp_path / "i.db"),
+            MockEmbedder(),
+            table="vecs; DROP TABLE users; --",
+        )
+    with pytest.raises(ValueError, match="Invalid table name"):
+        VectorIndex(str(tmp_path / "i.db"), MockEmbedder(), table="1bad_start")
+    with pytest.raises(ValueError, match="Invalid table name"):
+        VectorIndex(str(tmp_path / "i.db"), MockEmbedder(), table="with space")
+
+
+def test_init_accepts_safe_table_names(tmp_path):
+    VectorIndex(str(tmp_path / "a.db"), MockEmbedder(), table="my_vectors")
+    VectorIndex(str(tmp_path / "b.db"), MockEmbedder(), table="_internal")
+    VectorIndex(str(tmp_path / "c.db"), MockEmbedder(), table="v2_index")
+
+
+@pytest.mark.asyncio
+async def test_init_detects_corrupt_mixed_dimensions(tmp_path):
+    """If the DB somehow has rows with mismatched dims, reopening must
+    fail loudly rather than silently accept one of them."""
+    import sqlite3
+
+    db = str(tmp_path / "corrupt.db")
+    idx = VectorIndex(db, BadDimensionEmbedder(dim=8))
+    await idx.index("a", "first")
+    # Simulate corruption: bypass dimension enforcement by writing directly.
+    # (Normal code path would raise ValueError, but a buggy past write might
+    # have landed a mixed-dim row.)
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            "INSERT INTO vector_index_embeddings "
+            "(entry_id, embedding, dim, text_hash) VALUES (?, ?, ?, ?)",
+            ("b", b"\x00" * 16, 4, "h"),  # dim=4, row "a" has dim=8
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with pytest.raises(RuntimeError, match="corrupt"):
+        VectorIndex(db, BadDimensionEmbedder(dim=8))
+
+
+@pytest.mark.asyncio
+async def test_reopen_enforces_existing_dimension(tmp_path):
+    """After reopen, inserting a different-dim embedding must raise —
+    the dimension should have been recovered from existing rows."""
+    db = str(tmp_path / "i.db")
+    idx = VectorIndex(db, BadDimensionEmbedder(dim=8))
+    await idx.index("a", "first")
+
+    # Fresh instance, should load dim=8 from the stored row
+    idx2 = VectorIndex(db, BadDimensionEmbedder(dim=16))
+    assert idx2.backend.dimension == 8
+    with pytest.raises(ValueError, match="Dimension mismatch"):
+        await idx2.index("b", "second")
+
+
+@pytest.mark.asyncio
+async def test_upsert_preserves_created_at_updates_updated_at(tmp_path):
+    """Re-indexing an existing entry must not rewrite ``created_at`` —
+    it's the true insertion time. ``updated_at`` captures the last write."""
+    import sqlite3
+    import time
+
+    db = str(tmp_path / "i.db")
+    idx = VectorIndex(db, MockEmbedder())
+    await idx.index("a", "first text")
+
+    conn = sqlite3.connect(db)
+    try:
+        original = conn.execute(
+            "SELECT created_at, updated_at FROM vector_index_embeddings "
+            "WHERE entry_id = ?",
+            ("a",),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    # Small sleep so CURRENT_TIMESTAMP advances (sqlite truncates to seconds)
+    time.sleep(1.1)
+    await idx.index("a", "updated text")
+
+    conn = sqlite3.connect(db)
+    try:
+        after = conn.execute(
+            "SELECT created_at, updated_at FROM vector_index_embeddings "
+            "WHERE entry_id = ?",
+            ("a",),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert after[0] == original[0], "created_at must be preserved on upsert"
+    assert after[1] != original[1], "updated_at must change on upsert"
 
 
 # ---------------------------------------------------------------------------
@@ -215,11 +349,16 @@ async def test_search_empty_index_returns_empty(tmp_path):
 async def test_search_min_score_filter(tmp_path):
     idx = VectorIndex(str(tmp_path / "i.db"), MockEmbedder())
     await idx.index("a", "hello")
-    # Set min_score high enough that nothing passes
+    # Self-match score is ~1.0 (passes the filter), other items would be
+    # well below 0.999. Verify the filter actually excludes the unrelated
+    # query by asserting empty — not vacuously via "all() over []".
     hits = await idx.search("totally unrelated query xyz", k=10, min_score=0.999)
-    # The self-similarity is ~1.0, but no item here was indexed as the query
-    # So nothing should pass 0.999
-    assert all(s >= 0.999 for _, s in hits)
+    assert hits == [], f"Expected empty under high min_score, got {hits}"
+
+    # Sanity: low threshold returns the row
+    hits = await idx.search("hello", k=1, min_score=0.5)
+    assert len(hits) == 1
+    assert hits[0][0] == "a"
 
 
 @pytest.mark.asyncio
