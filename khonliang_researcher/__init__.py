@@ -70,6 +70,10 @@ from khonliang_researcher.engines import (
     WebSearchEngine,
 )
 from khonliang_researcher.agent import BaseResearchAgent
+from khonliang_researcher.vector_index import (
+    VectorIndex,
+    reciprocal_rank_fusion,
+)
 
 # Backward compatibility aliases
 ConceptNode = EntityNode
@@ -118,6 +122,9 @@ __all__ = [
     "WebSearchEngine",
     # Research agent
     "BaseResearchAgent",
+    # Vector index + retrieval fusion
+    "VectorIndex",
+    "reciprocal_rank_fusion",
     # Backward compat
     "ConceptNode",
     "build_project_scores",
