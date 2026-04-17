@@ -19,6 +19,7 @@ All built from TripleStore + KnowledgeStore data.
 import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from khonliang.knowledge.store import KnowledgeStore, Tier
@@ -259,6 +260,81 @@ def build_entity_graph(
     return nodes
 
 
+def _normalize_entity_name(name: str) -> str:
+    return " ".join(
+        name.lower()
+        .replace("_", " ")
+        .replace("-", " ")
+        .replace("/", " ")
+        .split()
+    )
+
+
+def _entity_tokens(name: str) -> Set[str]:
+    return set(_normalize_entity_name(name).split())
+
+
+def suggest_entities(
+    graph: Dict[str, EntityNode],
+    query: str,
+    limit: int = 5,
+    min_score: float = 0.25,
+) -> List[Tuple[str, float]]:
+    """Rank existing graph nodes that look related to ``query``.
+
+    Suggestions are intentionally limited to nodes already present in the
+    graph. Candidate-node creation belongs in a higher-level neighborhood
+    refresh step, while this helper keeps lookups deterministic and cheap.
+    """
+    normalized_query = _normalize_entity_name(query)
+    query_tokens = _entity_tokens(query)
+    if not normalized_query:
+        return []
+
+    scored: List[Tuple[str, float]] = []
+    for name, node in graph.items():
+        normalized_name = _normalize_entity_name(name)
+        name_tokens = _entity_tokens(name)
+
+        if normalized_name == normalized_query:
+            score = 1.0
+        elif normalized_query in normalized_name or normalized_name in normalized_query:
+            score = 0.85
+        else:
+            overlap = len(query_tokens & name_tokens)
+            union = len(query_tokens | name_tokens) or 1
+            token_score = overlap / union
+            text_score = SequenceMatcher(None, normalized_query, normalized_name).ratio()
+            score = max(token_score, text_score * 0.7)
+
+        if score < min_score:
+            continue
+
+        # Prefer well-connected nodes when textual similarity ties.
+        score += min(len(node.connections), 5) * 0.01
+        scored.append((name, score))
+
+    scored.sort(key=lambda item: (-item[1], item[0].lower()))
+    return scored[:limit]
+
+
+def resolve_entity(graph: Dict[str, EntityNode], query: str) -> Optional[str]:
+    """Return the canonical graph node name for an exact/case-insensitive query."""
+    if query in graph:
+        return query
+    matches = [name for name in graph if name.lower() == query.lower()]
+    return matches[0] if matches else None
+
+
+def format_entity_suggestions(suggestions: List[Tuple[str, float]]) -> str:
+    """Format ranked suggestions for compact CLI/MCP output."""
+    if not suggestions:
+        return ""
+    return "Suggestions: " + ", ".join(
+        f"{name} ({score:.0%})" for name, score in suggestions
+    )
+
+
 def trace_chain(
     graph: Dict[str, EntityNode],
     start: str,
@@ -274,12 +350,14 @@ def trace_chain(
         ├── competes_with → RIVN
         └── sector_member → EV
     """
-    if start not in graph:
-        matches = [k for k in graph if k.lower() == start.lower()]
-        if matches:
-            start = matches[0]
-        else:
-            return f"Entity '{start}' not found in graph."
+    canonical_start = resolve_entity(graph, start)
+    if canonical_start:
+        start = canonical_start
+    else:
+        suggestion_text = format_entity_suggestions(suggest_entities(graph, start))
+        if suggestion_text:
+            return f"Entity '{start}' not found in graph. {suggestion_text}"
+        return f"Entity '{start}' not found in graph."
 
     root_tags = format_target_tags(graph[start].targets)
     lines = [f"{start} {root_tags}" if root_tags else start]
@@ -342,11 +420,13 @@ def find_paths(
 
     Returns list of paths, each path is [(node, predicate, next_node), ...].
     """
-    if start not in graph or end not in graph:
+    canonical_start = resolve_entity(graph, start)
+    canonical_end = resolve_entity(graph, end)
+    if not canonical_start or not canonical_end:
         return []
 
     paths: List[List[Tuple[str, str, str]]] = []
-    _find_paths_recursive(graph, start, end, [], set(), paths, max_depth)
+    _find_paths_recursive(graph, canonical_start, canonical_end, [], set(), paths, max_depth)
     return paths
 
 

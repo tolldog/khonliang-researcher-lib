@@ -40,9 +40,12 @@ from khonliang_researcher.graph import (
     build_entity_matrix,
     build_entity_graph,
     format_matrix,
+    format_entity_suggestions,
     format_target_tags,
     trace_chain,
     find_paths,
+    resolve_entity,
+    suggest_entities,
 )
 from khonliang_researcher.worker import BaseQueueWorker
 from khonliang_researcher.synthesizer import BaseSynthesizer, SynthesisResult
@@ -92,9 +95,12 @@ __all__ = [
     "build_entity_matrix",
     "build_entity_graph",
     "format_matrix",
+    "format_entity_suggestions",
     "format_target_tags",
     "trace_chain",
     "find_paths",
+    "resolve_entity",
+    "suggest_entities",
     # Worker
     "BaseQueueWorker",
     # Synthesizer
