@@ -11,6 +11,7 @@ from khonliang_researcher.graph import (
     build_entity_matrix,
     build_entity_graph,
     format_target_tags,
+    suggest_entities,
     trace_chain,
     find_paths,
 )
@@ -209,6 +210,35 @@ def test_trace_chain_not_found():
     assert "not found" in result
 
 
+def test_trace_chain_not_found_suggests_existing_nodes():
+    graph = {
+        "AI Code Review": EntityNode(
+            name="AI Code Review",
+            connections={"Pull Request Review": ["applies_to"]},
+        ),
+        "Multi Agent Review": EntityNode(name="Multi Agent Review"),
+        "Vector Index": EntityNode(name="Vector Index"),
+    }
+    result = trace_chain(graph, "code review")
+    assert "not found" in result
+    assert "Suggestions:" in result
+    assert "AI Code Review" in result
+    assert "Vector Index" not in result
+
+
+def test_suggest_entities_ranks_phrase_matches():
+    graph = {
+        "AI Code Review": EntityNode(name="AI Code Review"),
+        "Automated Code Review": EntityNode(name="Automated Code Review"),
+        "Vector Index": EntityNode(name="Vector Index"),
+    }
+    suggestions = suggest_entities(graph, "code review", limit=2)
+    assert [name for name, _score in suggestions] == [
+        "AI Code Review",
+        "Automated Code Review",
+    ]
+
+
 def test_trace_chain_case_insensitive():
     graph = {"TSLA": EntityNode(name="TSLA", connections={})}
     result = trace_chain(graph, "tsla")
@@ -263,6 +293,18 @@ def test_find_paths_direct():
     paths = find_paths(graph, "A", "B")
     assert len(paths) == 1
     assert paths[0] == [("A", "rel", "B")]
+
+
+def test_find_paths_case_insensitive():
+    graph = {
+        "AI Code Review": EntityNode(
+            name="AI Code Review",
+            connections={"Pull Request Review": ["applies_to"]},
+        ),
+        "Pull Request Review": EntityNode(name="Pull Request Review", connections={}),
+    }
+    paths = find_paths(graph, "ai code review", "pull request review")
+    assert paths == [[("AI Code Review", "applies_to", "Pull Request Review")]]
 
 
 def test_find_paths_indirect():
