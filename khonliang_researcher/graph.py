@@ -298,10 +298,14 @@ def build_concept_taxonomy(
         for label in (universal_concepts or ())
         if label and label.strip()
     ]
-    universal_tokens = {
-        label: _entity_tokens(label)
-        for label in universal_labels
-        if _entity_tokens(label)
+    universal_tokens: Dict[str, Set[str]] = {}
+    for label in universal_labels:
+        tokens = _entity_tokens(label)
+        if tokens:
+            universal_tokens[label] = tokens
+    normalized_universal_labels = {
+        _normalize_entity_name(label)
+        for label in universal_tokens
     }
 
     groups_by_key: Dict[Tuple[str, str], TaxonomyGroup] = {}
@@ -309,7 +313,12 @@ def build_concept_taxonomy(
 
     for entity in sorted(graph, key=str.lower):
         node = graph[entity]
-        audience = _audience_for_entity(entity, node, entity_audiences, universal_tokens)
+        audience = _audience_for_entity(
+            entity,
+            node,
+            entity_audiences,
+            normalized_universal_labels,
+        )
         label = _taxonomy_label_for_entity(entity)
         key = (audience, label)
         if key not in groups_by_key:
@@ -372,12 +381,12 @@ def _audience_for_entity(
     entity: str,
     node: EntityNode,
     entity_audiences: Dict[str, str],
-    universal_tokens: Dict[str, Set[str]],
+    normalized_universal_labels: Set[str],
 ) -> str:
     if entity in entity_audiences:
         return _normalize_audience(entity_audiences[entity])
     normalized = _normalize_entity_name(entity)
-    if normalized in {_normalize_entity_name(label) for label in universal_tokens}:
+    if normalized in normalized_universal_labels:
         return "universal"
     if node.targets:
         return _normalize_audience(max(node.targets.items(), key=lambda item: (item[1], item[0]))[0])
