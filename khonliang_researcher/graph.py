@@ -279,6 +279,7 @@ def suggest_entities(
     query: str,
     limit: int = 5,
     min_score: float = 0.25,
+    max_query_chars: int = 120,
 ) -> List[Tuple[str, float]]:
     """Rank existing graph nodes that look related to ``query``.
 
@@ -286,8 +287,8 @@ def suggest_entities(
     graph. Candidate-node creation belongs in a higher-level neighborhood
     refresh step, while this helper keeps lookups deterministic and cheap.
     """
-    normalized_query = _normalize_entity_name(query)
-    query_tokens = _entity_tokens(query)
+    normalized_query = _normalize_entity_name(query[:max_query_chars])
+    query_tokens = set(normalized_query.split())
     if not normalized_query:
         return []
 
@@ -304,14 +305,17 @@ def suggest_entities(
             overlap = len(query_tokens & name_tokens)
             union = len(query_tokens | name_tokens) or 1
             token_score = overlap / union
-            text_score = SequenceMatcher(None, normalized_query, normalized_name).ratio()
+            if token_score > 0 or normalized_query[:3] in normalized_name:
+                text_score = SequenceMatcher(None, normalized_query, normalized_name).ratio()
+            else:
+                text_score = 0.0
             score = max(token_score, text_score * 0.7)
 
         if score < min_score:
             continue
 
         # Prefer well-connected nodes when textual similarity ties.
-        score += min(len(node.connections), 5) * 0.01
+        score = min(score + min(len(node.connections), 5) * 0.01, 1.0)
         scored.append((name, score))
 
     scored.sort(key=lambda item: (-item[1], item[0].lower()))
@@ -340,6 +344,7 @@ def trace_chain(
     start: str,
     max_depth: int = 4,
     max_branches: int = 3,
+    depth: Optional[int] = None,
 ) -> str:
     """Trace an entity chain from a starting node.
 
@@ -350,6 +355,9 @@ def trace_chain(
         ├── competes_with → RIVN
         └── sector_member → EV
     """
+    if depth is not None:
+        max_depth = depth
+
     canonical_start = resolve_entity(graph, start)
     if canonical_start:
         start = canonical_start
