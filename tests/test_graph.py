@@ -7,6 +7,7 @@ import pytest
 
 from khonliang_researcher.graph import (
     EntityNode,
+    build_concept_taxonomy,
     build_target_scores,
     build_entity_matrix,
     build_entity_graph,
@@ -134,6 +135,51 @@ def test_build_entity_graph_with_project_scores():
 
     graph = build_entity_graph(triple_store, knowledge=knowledge)
     assert "proj" in graph["concept_a"].targets
+
+
+def test_build_concept_taxonomy_assigns_stable_audience_codes():
+    graph = {
+        "Multi Agent Review": EntityNode(name="Multi Agent Review"),
+        "Multi Agent Code Review": EntityNode(
+            name="Multi Agent Code Review",
+            targets={"developer-researcher": 0.9},
+        ),
+        "General Search": EntityNode(name="General Search"),
+    }
+
+    taxonomy = build_concept_taxonomy(
+        graph,
+        universal_concepts=["Multi Agent Review"],
+    )
+
+    groups = {(g["audience"], g["label"]): g for g in taxonomy["groups"]}
+    assert groups[("universal", "multi agent review")]["code"] == "UNI.001"
+    assert groups[("developer-researcher", "multi agent code review")]["code"] == "DR.001"
+    assert groups[("general", "general search")]["code"] == "GEN.001"
+
+    assert {
+        "source": "DR.001",
+        "predicate": "specializes",
+        "target": "UNI.001",
+        "confidence": 1.0,
+    } in taxonomy["relationships"]
+    assert taxonomy["entity_groups"]["Multi Agent Code Review"] == "DR.001"
+
+
+def test_build_concept_taxonomy_accepts_explicit_entity_audiences():
+    graph = {
+        "Code Review": EntityNode(name="Code Review"),
+        "Pull Request Review": EntityNode(name="Pull Request Review"),
+    }
+
+    taxonomy = build_concept_taxonomy(
+        graph,
+        entity_audiences={"Pull Request Review": "developer researcher"},
+    )
+
+    groups = {(g["audience"], g["label"]): g for g in taxonomy["groups"]}
+    assert ("developer-researcher", "pull request review") in groups
+    assert ("general", "code review") in groups
 
 
 # ---------------------------------------------------------------------------

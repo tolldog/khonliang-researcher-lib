@@ -36,9 +36,12 @@ Usage (domain researcher — add specialization)::
 from khonliang_researcher.relevance import RelevanceScorer, cosine_similarity
 from khonliang_researcher.graph import (
     EntityNode,
+    TaxonomyGroup,
+    TaxonomyRelationship,
     build_target_scores,
     build_entity_matrix,
     build_entity_graph,
+    build_concept_taxonomy,
     format_matrix,
     format_entity_suggestions,
     format_target_tags,
@@ -91,9 +94,12 @@ __all__ = [
     "cosine_similarity",
     # Graph
     "EntityNode",
+    "TaxonomyGroup",
+    "TaxonomyRelationship",
     "build_target_scores",
     "build_entity_matrix",
     "build_entity_graph",
+    "build_concept_taxonomy",
     "format_matrix",
     "format_entity_suggestions",
     "format_target_tags",

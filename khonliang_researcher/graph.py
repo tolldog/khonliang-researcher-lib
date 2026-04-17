@@ -20,7 +20,7 @@ import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from khonliang.knowledge.store import KnowledgeStore, Tier
 from khonliang.knowledge.triples import TripleStore
@@ -221,6 +221,24 @@ class EntityNode:
     # targets = {"TSLA": 0.85, "tech": 0.72}
 
 
+@dataclass
+class TaxonomyGroup:
+    """A deterministic subject group for browsing concept neighborhoods."""
+    code: str
+    label: str
+    audience: str
+    entities: List[str] = field(default_factory=list)
+
+
+@dataclass
+class TaxonomyRelationship:
+    """Typed relationship between two taxonomy groups."""
+    source: str
+    predicate: str
+    target: str
+    confidence: float = 1.0
+
+
 def build_entity_graph(
     triples: TripleStore,
     min_confidence: float = 0.5,
@@ -260,6 +278,82 @@ def build_entity_graph(
     return nodes
 
 
+def build_concept_taxonomy(
+    graph: Dict[str, EntityNode],
+    *,
+    entity_audiences: Optional[Dict[str, str]] = None,
+    universal_concepts: Optional[Iterable[str]] = None,
+) -> Dict[str, Any]:
+    """Build a stable audience-scoped taxonomy over graph entities.
+
+    The taxonomy is deliberately lightweight: it groups existing graph nodes,
+    assigns deterministic library-style codes, and links audience-specific
+    concepts back to universal parents when their token sets specialize a
+    universal pattern. Candidate creation and LLM labeling can build on top of
+    this primitive without changing the stable return shape.
+    """
+    entity_audiences = entity_audiences or {}
+    universal_labels = [
+        label.strip()
+        for label in (universal_concepts or ())
+        if label and label.strip()
+    ]
+    universal_tokens = {
+        label: _entity_tokens(label)
+        for label in universal_labels
+        if _entity_tokens(label)
+    }
+
+    groups_by_key: Dict[Tuple[str, str], TaxonomyGroup] = {}
+    entity_to_group: Dict[str, str] = {}
+
+    for entity in sorted(graph, key=str.lower):
+        node = graph[entity]
+        audience = _audience_for_entity(entity, node, entity_audiences, universal_tokens)
+        label = _taxonomy_label_for_entity(entity)
+        key = (audience, label)
+        if key not in groups_by_key:
+            groups_by_key[key] = TaxonomyGroup(
+                code="",
+                label=label,
+                audience=audience,
+                entities=[],
+            )
+        groups_by_key[key].entities.append(entity)
+
+    groups = sorted(groups_by_key.values(), key=lambda g: (g.audience, g.label))
+    for audience, audience_groups in _groups_by_audience(groups).items():
+        prefix = _taxonomy_code_prefix(audience)
+        for idx, group in enumerate(audience_groups, start=1):
+            group.code = f"{prefix}.{idx:03d}"
+            for entity in group.entities:
+                entity_to_group[entity] = group.code
+
+    relationships = _taxonomy_relationships(groups, universal_tokens)
+
+    return {
+        "groups": [
+            {
+                "code": group.code,
+                "label": group.label,
+                "audience": group.audience,
+                "entities": list(group.entities),
+            }
+            for group in groups
+        ],
+        "relationships": [
+            {
+                "source": rel.source,
+                "predicate": rel.predicate,
+                "target": rel.target,
+                "confidence": rel.confidence,
+            }
+            for rel in relationships
+        ],
+        "entity_groups": entity_to_group,
+    }
+
+
 def _normalize_entity_name(name: str) -> str:
     return " ".join(
         name.lower()
@@ -272,6 +366,81 @@ def _normalize_entity_name(name: str) -> str:
 
 def _entity_tokens(name: str) -> Set[str]:
     return set(_normalize_entity_name(name).split())
+
+
+def _audience_for_entity(
+    entity: str,
+    node: EntityNode,
+    entity_audiences: Dict[str, str],
+    universal_tokens: Dict[str, Set[str]],
+) -> str:
+    if entity in entity_audiences:
+        return _normalize_audience(entity_audiences[entity])
+    normalized = _normalize_entity_name(entity)
+    if normalized in {_normalize_entity_name(label) for label in universal_tokens}:
+        return "universal"
+    if node.targets:
+        return _normalize_audience(max(node.targets.items(), key=lambda item: (item[1], item[0]))[0])
+    return "general"
+
+
+def _taxonomy_label_for_entity(entity: str) -> str:
+    return _normalize_entity_name(entity)
+
+
+def _normalize_audience(value: str) -> str:
+    normalized = _normalize_entity_name(value).replace(" ", "-")
+    return normalized or "general"
+
+
+def _taxonomy_code_prefix(audience: str) -> str:
+    parts = [part for part in audience.replace("_", "-").split("-") if part]
+    if not parts:
+        return "GEN"
+    if len(parts) == 1:
+        return parts[0][:3].upper()
+    return "".join(part[0].upper() for part in parts[:3])
+
+
+def _groups_by_audience(groups: List[TaxonomyGroup]) -> Dict[str, List[TaxonomyGroup]]:
+    grouped: Dict[str, List[TaxonomyGroup]] = defaultdict(list)
+    for group in groups:
+        grouped[group.audience].append(group)
+    for audience_groups in grouped.values():
+        audience_groups.sort(key=lambda group: group.label)
+    return dict(grouped)
+
+
+def _taxonomy_relationships(
+    groups: List[TaxonomyGroup],
+    universal_tokens: Dict[str, Set[str]],
+) -> List[TaxonomyRelationship]:
+    by_label_audience = {
+        (group.label, group.audience): group
+        for group in groups
+    }
+    relationships: List[TaxonomyRelationship] = []
+    seen: Set[Tuple[str, str, str]] = set()
+    for group in groups:
+        if group.audience == "universal":
+            continue
+        group_tokens = _entity_tokens(group.label)
+        for universal_label, tokens in universal_tokens.items():
+            normalized_parent = _normalize_entity_name(universal_label)
+            parent = by_label_audience.get((normalized_parent, "universal"))
+            if not parent or not tokens or not tokens.issubset(group_tokens):
+                continue
+            key = (group.code, "specializes", parent.code)
+            if key in seen:
+                continue
+            seen.add(key)
+            relationships.append(TaxonomyRelationship(
+                source=group.code,
+                predicate="specializes",
+                target=parent.code,
+            ))
+    relationships.sort(key=lambda rel: (rel.source, rel.predicate, rel.target))
+    return relationships
 
 
 def suggest_entities(
