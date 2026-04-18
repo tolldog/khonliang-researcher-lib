@@ -223,6 +223,27 @@ def test_build_investigation_workspace_creates_branchable_evidence_graph():
     }
 
 
+def test_investigation_workspace_populates_target_scores():
+    triples = [
+        FakeTriple("Concept", "relates_to", "Neighbor", source="paper:p1"),
+    ]
+    summary = FakeEntry(
+        id="sum1",
+        tags=["summary"],
+        metadata={"parent_id": "p1", "assessments": {"developer": {"score": 0.8}}},
+    )
+
+    workspace = build_investigation_workspace(
+        make_triple_store(triples),
+        seeds=["Concept"],
+        knowledge=make_knowledge_store([summary]),
+        max_depth=1,
+    )
+
+    concept = next(node for node in workspace["nodes"] if node["name"] == "Concept")
+    assert concept["targets"] == {"developer": 0.8}
+
+
 def test_investigation_workspace_reports_missing_seeds_and_formats():
     triple_store = make_triple_store([
         FakeTriple("Known", "relates_to", "Neighbor", source="paper:p1"),
@@ -248,15 +269,20 @@ def test_archive_investigation_workspace_returns_archived_copy():
     workspace = {
         "workspace_id": "investigation:x",
         "status": "active",
-        "metadata": {"owner": "researcher"},
+        "branches": [{"branch_id": "main", "seeds": ["A"]}],
+        "metadata": {"owner": "researcher", "nested": {"value": 1}},
     }
 
     archived = archive_investigation_workspace(workspace, reason="done")
+    archived["branches"][0]["seeds"].append("B")
+    archived["metadata"]["nested"]["value"] = 2
 
     assert archived["status"] == "archived"
     assert archived["metadata"]["owner"] == "researcher"
     assert archived["metadata"]["archive_reason"] == "done"
     assert workspace["status"] == "active"
+    assert workspace["branches"][0]["seeds"] == ["A"]
+    assert workspace["metadata"]["nested"]["value"] == 1
 
 
 # ---------------------------------------------------------------------------

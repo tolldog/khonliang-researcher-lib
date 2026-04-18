@@ -17,7 +17,8 @@ All built from TripleStore + KnowledgeStore data.
 """
 
 import logging
-from collections import defaultdict
+from collections import defaultdict, deque
+from copy import deepcopy
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
@@ -266,13 +267,13 @@ class InvestigationWorkspace:
             "workspace_id": self.workspace_id,
             "label": self.label,
             "status": self.status,
-            "seeds": list(self.seeds),
-            "branches": list(self.branches),
-            "nodes": list(self.nodes),
-            "edges": list(self.edges),
-            "corpus_refs": list(self.corpus_refs),
+            "seeds": deepcopy(self.seeds),
+            "branches": deepcopy(self.branches),
+            "nodes": deepcopy(self.nodes),
+            "edges": deepcopy(self.edges),
+            "corpus_refs": deepcopy(self.corpus_refs),
             "one_way_refs": self.one_way_refs,
-            "metadata": dict(self.metadata),
+            "metadata": deepcopy(self.metadata),
         }
 
 
@@ -343,6 +344,7 @@ def build_investigation_workspace(
     graph = build_entity_graph(
         _StaticTripleStore(all_triples),
         min_confidence=min_confidence,
+        knowledge=knowledge,
         source_prefix=source_prefix,
     )
 
@@ -419,14 +421,14 @@ def build_investigation_workspace(
                 edge["corpus_refs"].append(source)
 
         if missing_for_branch:
-            missing[branch_id] = missing_for_branch
+            missing[branch_id] = list(missing_for_branch)
 
         branch_summaries.append({
             "branch_id": branch_id,
             "label": spec.label,
-            "seeds": branch_seeds,
-            "resolved_seeds": resolved,
-            "missing_seeds": missing_for_branch,
+            "seeds": list(branch_seeds),
+            "resolved_seeds": list(resolved),
+            "missing_seeds": list(missing_for_branch),
             "node_count": len(branch_nodes),
             "edge_count": len(branch_edges),
             "corpus_refs": sorted(branch_ref_ids),
@@ -438,6 +440,12 @@ def build_investigation_workspace(
         for seed in branch["resolved_seeds"]
     })
     workspace_label = label or ", ".join(seed_list) or "investigation"
+    normalized_edges = []
+    for edge in workspace_edges.values():
+        normalized = dict(edge)
+        normalized["branch_ids"] = sorted(set(normalized.get("branch_ids", [])))
+        normalized["corpus_refs"] = sorted(set(normalized.get("corpus_refs", [])))
+        normalized_edges.append(normalized)
     workspace = InvestigationWorkspace(
         workspace_id=workspace_id or f"investigation:{_slug(workspace_label)}",
         label=workspace_label,
@@ -445,7 +453,7 @@ def build_investigation_workspace(
         branches=branch_summaries,
         nodes=sorted(workspace_nodes.values(), key=lambda node: node["name"].lower()),
         edges=sorted(
-            workspace_edges.values(),
+            normalized_edges,
             key=lambda edge: (edge["source"].lower(), edge["predicate"], edge["target"].lower()),
         ),
         corpus_refs=sorted(corpus_refs.values(), key=lambda ref: ref["ref_id"]),
@@ -467,7 +475,7 @@ def archive_investigation_workspace(
     reason: str = "",
 ) -> Dict[str, Any]:
     """Return an archived copy of a workspace dict without mutating the input."""
-    archived = dict(workspace)
+    archived = deepcopy(workspace)
     metadata = dict(archived.get("metadata", {}))
     if reason:
         metadata["archive_reason"] = reason
@@ -590,7 +598,12 @@ def _triple_adjacency(triples: List[Any]) -> Dict[str, List[Any]]:
     for triple in triples:
         adjacency[getattr(triple, "subject")].append(triple)
     for outgoing in adjacency.values():
-        outgoing.sort(key=lambda t: (-float(getattr(t, "confidence", 0.0) or 0.0), getattr(t, "object", "")))
+        outgoing.sort(key=lambda t: (
+            -float(getattr(t, "confidence", 0.0) or 0.0),
+            getattr(t, "object", ""),
+            getattr(t, "predicate", ""),
+            getattr(t, "source", ""),
+        ))
     return dict(adjacency)
 
 
@@ -604,11 +617,11 @@ def _walk_investigation_branch(
     nodes: Set[str] = set(seeds)
     edges: List[Any] = []
     seen_edges: Set[Tuple[str, str, str]] = set()
-    queue: List[Tuple[str, int]] = [(seed, 0) for seed in seeds]
+    queue = deque((seed, 0) for seed in seeds)
     visited: Set[Tuple[str, int]] = set()
 
     while queue:
-        current, depth = queue.pop(0)
+        current, depth = queue.popleft()
         if (current, depth) in visited:
             continue
         visited.add((current, depth))
