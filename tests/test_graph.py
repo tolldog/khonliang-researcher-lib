@@ -7,10 +7,13 @@ import pytest
 
 from khonliang_researcher.graph import (
     EntityNode,
+    archive_investigation_workspace,
     build_concept_taxonomy,
+    build_investigation_workspace,
     build_target_scores,
     build_entity_matrix,
     build_entity_graph,
+    format_investigation_workspace,
     format_target_tags,
     suggest_entities,
     trace_chain,
@@ -180,6 +183,80 @@ def test_build_concept_taxonomy_accepts_explicit_entity_audiences():
     groups = {(g["audience"], g["label"]): g for g in taxonomy["groups"]}
     assert ("developer-researcher", "pull request review") in groups
     assert ("general", "code review") in groups
+
+
+def test_build_investigation_workspace_creates_branchable_evidence_graph():
+    triples = [
+        FakeTriple("Claude Optimization", "uses", "Prompt Caching", source="paper:p1", confidence=0.95),
+        FakeTriple("Prompt Caching", "reduces", "Token Cost", source="paper:p1", confidence=0.9),
+        FakeTriple("Claude Optimization", "uses", "Session Hygiene", source="paper:p2", confidence=0.8),
+        FakeTriple("Session Hygiene", "prevents", "Cache Cliff", source="paper:p2", confidence=0.75),
+        FakeTriple("Parallel Investigation", "compares", "Prompt Caching", source="paper:p3", confidence=0.7),
+    ]
+    triple_store = make_triple_store(triples)
+    knowledge = make_knowledge_store([
+        FakeEntry(id="p1", title="Prompt Caching for Agents"),
+        FakeEntry(id="p2", title="Session Hygiene"),
+        FakeEntry(id="p3", title="Parallel Research"),
+    ])
+
+    workspace = build_investigation_workspace(
+        triple_store,
+        seeds=["Claude Optimization"],
+        label="Claude optimization",
+        branch_specs=[
+            {"branch_id": "cache", "label": "Cache behavior", "seeds": ["Prompt Caching"]},
+            {"branch_id": "sessions", "label": "Session management", "seeds": ["Session Hygiene"]},
+        ],
+        knowledge=knowledge,
+        max_depth=1,
+    )
+
+    assert workspace["workspace_id"] == "investigation:claude-optimization"
+    assert workspace["one_way_refs"] is True
+    assert {branch["branch_id"] for branch in workspace["branches"]} == {"cache", "sessions"}
+    assert {edge["source"] for edge in workspace["edges"]} == {"Prompt Caching", "Session Hygiene"}
+    assert {ref["ref_id"] for ref in workspace["corpus_refs"]} == {"paper:p1", "paper:p2"}
+    assert {ref.get("title") for ref in workspace["corpus_refs"]} == {
+        "Prompt Caching for Agents",
+        "Session Hygiene",
+    }
+
+
+def test_investigation_workspace_reports_missing_seeds_and_formats():
+    triple_store = make_triple_store([
+        FakeTriple("Known", "relates_to", "Neighbor", source="paper:p1"),
+    ])
+
+    workspace = build_investigation_workspace(
+        triple_store,
+        seeds="Known",
+        branch_specs=["unknown path:Missing Concept"],
+    )
+
+    assert workspace["branches"][0]["missing_seeds"] == ["Missing Concept"]
+    assert workspace["metadata"]["missing_seeds"] == {"unknown-path": ["Missing Concept"]}
+    compact = format_investigation_workspace(workspace, detail="compact")
+    assert compact.startswith("investigation:known")
+    assert "branches=1" in compact
+    brief = format_investigation_workspace(workspace)
+    assert "missing seeds:" in brief
+    assert "unknown-path: Missing Concept" in brief
+
+
+def test_archive_investigation_workspace_returns_archived_copy():
+    workspace = {
+        "workspace_id": "investigation:x",
+        "status": "active",
+        "metadata": {"owner": "researcher"},
+    }
+
+    archived = archive_investigation_workspace(workspace, reason="done")
+
+    assert archived["status"] == "archived"
+    assert archived["metadata"]["owner"] == "researcher"
+    assert archived["metadata"]["archive_reason"] == "done"
+    assert workspace["status"] == "active"
 
 
 # ---------------------------------------------------------------------------

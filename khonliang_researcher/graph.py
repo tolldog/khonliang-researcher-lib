@@ -239,6 +239,43 @@ class TaxonomyRelationship:
     confidence: float = 1.0
 
 
+@dataclass
+class InvestigationBranchSpec:
+    """A labeled branch in a temporary investigation workspace."""
+    label: str
+    seeds: List[str] = field(default_factory=list)
+    branch_id: str = ""
+
+
+@dataclass
+class InvestigationWorkspace:
+    """A branchable, one-way evidence graph over the existing corpus."""
+    workspace_id: str
+    label: str
+    status: str = "active"
+    seeds: List[str] = field(default_factory=list)
+    branches: List[Dict[str, Any]] = field(default_factory=list)
+    nodes: List[Dict[str, Any]] = field(default_factory=list)
+    edges: List[Dict[str, Any]] = field(default_factory=list)
+    corpus_refs: List[Dict[str, Any]] = field(default_factory=list)
+    one_way_refs: bool = True
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "workspace_id": self.workspace_id,
+            "label": self.label,
+            "status": self.status,
+            "seeds": list(self.seeds),
+            "branches": list(self.branches),
+            "nodes": list(self.nodes),
+            "edges": list(self.edges),
+            "corpus_refs": list(self.corpus_refs),
+            "one_way_refs": self.one_way_refs,
+            "metadata": dict(self.metadata),
+        }
+
+
 def build_entity_graph(
     triples: TripleStore,
     min_confidence: float = 0.5,
@@ -276,6 +313,340 @@ def build_entity_graph(
                 nodes[entity].targets = target_scores
 
     return nodes
+
+
+def build_investigation_workspace(
+    triples: TripleStore,
+    seeds: Iterable[str] | str,
+    *,
+    label: str = "",
+    branch_specs: Optional[Iterable[InvestigationBranchSpec | Dict[str, Any] | str]] = None,
+    knowledge: Optional[KnowledgeStore] = None,
+    min_confidence: float = 0.5,
+    max_depth: int = 2,
+    max_branches: int = 4,
+    source_prefix: str = "paper:",
+    workspace_id: str = "",
+) -> Dict[str, Any]:
+    """Create a temporary branchable evidence graph from corpus triples.
+
+    The returned workspace references corpus documents but does not create or
+    mutate corpus triples. This lets an agent investigate a concept, compare
+    several branches, and later archive the workspace without polluting the
+    long-lived library graph.
+    """
+    seed_list = _normalize_seed_list(seeds)
+    all_triples = [
+        t for t in triples.get(min_confidence=min_confidence, limit=5000)
+        if getattr(t, "subject", "") and getattr(t, "object", "")
+    ]
+    graph = build_entity_graph(
+        _StaticTripleStore(all_triples),
+        min_confidence=min_confidence,
+        source_prefix=source_prefix,
+    )
+
+    branch_inputs = list(branch_specs or [])
+    if not branch_inputs:
+        branch_inputs = [InvestigationBranchSpec(label="main", seeds=seed_list)]
+
+    specs = [
+        _coerce_branch_spec(spec, default_seeds=seed_list, index=index)
+        for index, spec in enumerate(branch_inputs, start=1)
+    ]
+
+    workspace_nodes: Dict[str, Dict[str, Any]] = {}
+    workspace_edges: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+    corpus_refs: Dict[str, Dict[str, Any]] = {}
+    branch_summaries: List[Dict[str, Any]] = []
+    missing: Dict[str, List[str]] = {}
+
+    adjacency = _triple_adjacency(all_triples)
+    for spec in specs:
+        branch_id = spec.branch_id or _slug(spec.label, fallback=f"branch-{len(branch_summaries) + 1}")
+        branch_seeds = spec.seeds or seed_list
+        resolved = []
+        missing_for_branch = []
+        for seed in branch_seeds:
+            canonical = resolve_entity(graph, seed)
+            if canonical:
+                resolved.append(canonical)
+            else:
+                missing_for_branch.append(seed)
+
+        branch_nodes, branch_edges = _walk_investigation_branch(
+            adjacency,
+            resolved,
+            max_depth=max(0, int(max_depth)),
+            max_branches=max(1, int(max_branches)),
+        )
+
+        for node_name in branch_nodes:
+            node = graph.get(node_name)
+            existing = workspace_nodes.setdefault(node_name, {
+                "name": node_name,
+                "branch_ids": [],
+                "targets": dict(node.targets) if node else {},
+                "document_count": node.document_count if node else 0,
+            })
+            if branch_id not in existing["branch_ids"]:
+                existing["branch_ids"].append(branch_id)
+
+        branch_ref_ids: Set[str] = set()
+        for triple in branch_edges:
+            source = getattr(triple, "source", "") or ""
+            if source:
+                branch_ref_ids.add(source)
+                corpus_refs.setdefault(source, _corpus_ref(source, knowledge))
+
+            key = (
+                getattr(triple, "subject"),
+                getattr(triple, "predicate", "related_to"),
+                getattr(triple, "object"),
+            )
+            edge = workspace_edges.setdefault(key, {
+                "source": key[0],
+                "predicate": key[1],
+                "target": key[2],
+                "confidence": 0.0,
+                "branch_ids": [],
+                "corpus_refs": [],
+            })
+            edge["confidence"] = max(edge["confidence"], float(getattr(triple, "confidence", 0.0) or 0.0))
+            if branch_id not in edge["branch_ids"]:
+                edge["branch_ids"].append(branch_id)
+            if source and source not in edge["corpus_refs"]:
+                edge["corpus_refs"].append(source)
+
+        if missing_for_branch:
+            missing[branch_id] = missing_for_branch
+
+        branch_summaries.append({
+            "branch_id": branch_id,
+            "label": spec.label,
+            "seeds": branch_seeds,
+            "resolved_seeds": resolved,
+            "missing_seeds": missing_for_branch,
+            "node_count": len(branch_nodes),
+            "edge_count": len(branch_edges),
+            "corpus_refs": sorted(branch_ref_ids),
+        })
+
+    resolved_seed_set = sorted({
+        seed
+        for branch in branch_summaries
+        for seed in branch["resolved_seeds"]
+    })
+    workspace_label = label or ", ".join(seed_list) or "investigation"
+    workspace = InvestigationWorkspace(
+        workspace_id=workspace_id or f"investigation:{_slug(workspace_label)}",
+        label=workspace_label,
+        seeds=seed_list,
+        branches=branch_summaries,
+        nodes=sorted(workspace_nodes.values(), key=lambda node: node["name"].lower()),
+        edges=sorted(
+            workspace_edges.values(),
+            key=lambda edge: (edge["source"].lower(), edge["predicate"], edge["target"].lower()),
+        ),
+        corpus_refs=sorted(corpus_refs.values(), key=lambda ref: ref["ref_id"]),
+        metadata={
+            "resolved_seeds": resolved_seed_set,
+            "missing_seeds": missing,
+            "min_confidence": min_confidence,
+            "max_depth": max_depth,
+            "max_branches": max_branches,
+            "source_prefix": source_prefix,
+        },
+    )
+    return workspace.to_dict()
+
+
+def archive_investigation_workspace(
+    workspace: Dict[str, Any],
+    *,
+    reason: str = "",
+) -> Dict[str, Any]:
+    """Return an archived copy of a workspace dict without mutating the input."""
+    archived = dict(workspace)
+    metadata = dict(archived.get("metadata", {}))
+    if reason:
+        metadata["archive_reason"] = reason
+    archived["metadata"] = metadata
+    archived["status"] = "archived"
+    return archived
+
+
+def format_investigation_workspace(workspace: Dict[str, Any], *, detail: str = "brief") -> str:
+    """Format an investigation workspace for CLI/MCP output."""
+    detail = (detail or "brief").lower()
+    branches = workspace.get("branches", [])
+    nodes = workspace.get("nodes", [])
+    edges = workspace.get("edges", [])
+    refs = workspace.get("corpus_refs", [])
+
+    if detail == "compact":
+        return (
+            f"{workspace.get('workspace_id', '')}|status={workspace.get('status', '')}|"
+            f"branches={len(branches)}|nodes={len(nodes)}|edges={len(edges)}|refs={len(refs)}"
+        )
+
+    lines = [
+        f"Investigation workspace: {workspace.get('label', '')}",
+        f"id: {workspace.get('workspace_id', '')}",
+        f"status: {workspace.get('status', 'active')}",
+        f"branches: {len(branches)} | nodes: {len(nodes)} | edges: {len(edges)} | corpus refs: {len(refs)}",
+        "one-way corpus refs: yes" if workspace.get("one_way_refs", True) else "one-way corpus refs: no",
+    ]
+
+    missing = workspace.get("metadata", {}).get("missing_seeds", {})
+    if missing:
+        lines.append("missing seeds:")
+        for branch_id, seeds in sorted(missing.items()):
+            lines.append(f"  {branch_id}: {', '.join(seeds)}")
+
+    lines.append("")
+    lines.append("Branches:")
+    for branch in branches:
+        lines.append(
+            f"- {branch['branch_id']}: {branch['label']} "
+            f"({branch['node_count']} nodes, {branch['edge_count']} edges, "
+            f"{len(branch['corpus_refs'])} refs)"
+        )
+        if branch.get("resolved_seeds"):
+            lines.append(f"  seeds: {', '.join(branch['resolved_seeds'])}")
+
+    if detail == "full":
+        lines.append("")
+        lines.append("Edges:")
+        for edge in edges[:100]:
+            refs_text = f" refs={len(edge.get('corpus_refs', []))}" if edge.get("corpus_refs") else ""
+            lines.append(
+                f"- {edge['source']} -[{edge['predicate']}]-> {edge['target']} "
+                f"({edge['confidence']:.0%}){refs_text}"
+            )
+        if len(edges) > 100:
+            lines.append(f"... {len(edges) - 100} more edges")
+
+        lines.append("")
+        lines.append("Corpus refs:")
+        for ref in refs[:100]:
+            title = ref.get("title") or ref["ref_id"]
+            lines.append(f"- {ref['ref_id']}: {title}")
+        if len(refs) > 100:
+            lines.append(f"... {len(refs) - 100} more refs")
+
+    return "\n".join(lines)
+
+
+class _StaticTripleStore:
+    def __init__(self, triples: List[Any]):
+        self._triples = triples
+
+    def get(self, *args: Any, **kwargs: Any) -> List[Any]:
+        min_confidence = kwargs.get("min_confidence", 0.0)
+        limit = kwargs.get("limit", len(self._triples))
+        return [
+            t for t in self._triples
+            if float(getattr(t, "confidence", 0.0) or 0.0) >= min_confidence
+        ][:limit]
+
+
+def _normalize_seed_list(seeds: Iterable[str] | str) -> List[str]:
+    if isinstance(seeds, str):
+        raw = seeds.split(",")
+    else:
+        raw = list(seeds)
+    return [str(seed).strip() for seed in raw if str(seed).strip()]
+
+
+def _coerce_branch_spec(
+    spec: InvestigationBranchSpec | Dict[str, Any] | str,
+    *,
+    default_seeds: List[str],
+    index: int,
+) -> InvestigationBranchSpec:
+    if isinstance(spec, InvestigationBranchSpec):
+        return spec
+    if isinstance(spec, str):
+        label, _, seed_text = spec.partition(":")
+        seeds = _normalize_seed_list(seed_text) if seed_text else list(default_seeds)
+        return InvestigationBranchSpec(
+            label=label.strip() or f"branch {index}",
+            seeds=seeds,
+        )
+    if isinstance(spec, dict):
+        label = str(spec.get("label") or spec.get("branch_id") or f"branch {index}")
+        seeds_value = spec.get("seeds") or default_seeds
+        return InvestigationBranchSpec(
+            label=label,
+            seeds=_normalize_seed_list(seeds_value),
+            branch_id=str(spec.get("branch_id") or ""),
+        )
+    raise TypeError(f"unsupported branch spec: {type(spec).__name__}")
+
+
+def _triple_adjacency(triples: List[Any]) -> Dict[str, List[Any]]:
+    adjacency: Dict[str, List[Any]] = defaultdict(list)
+    for triple in triples:
+        adjacency[getattr(triple, "subject")].append(triple)
+    for outgoing in adjacency.values():
+        outgoing.sort(key=lambda t: (-float(getattr(t, "confidence", 0.0) or 0.0), getattr(t, "object", "")))
+    return dict(adjacency)
+
+
+def _walk_investigation_branch(
+    adjacency: Dict[str, List[Any]],
+    seeds: List[str],
+    *,
+    max_depth: int,
+    max_branches: int,
+) -> Tuple[Set[str], List[Any]]:
+    nodes: Set[str] = set(seeds)
+    edges: List[Any] = []
+    seen_edges: Set[Tuple[str, str, str]] = set()
+    queue: List[Tuple[str, int]] = [(seed, 0) for seed in seeds]
+    visited: Set[Tuple[str, int]] = set()
+
+    while queue:
+        current, depth = queue.pop(0)
+        if (current, depth) in visited:
+            continue
+        visited.add((current, depth))
+        if depth >= max_depth:
+            continue
+        for triple in adjacency.get(current, [])[:max_branches]:
+            target = getattr(triple, "object")
+            already_seen = target in nodes
+            key = (
+                getattr(triple, "subject"),
+                getattr(triple, "predicate", "related_to"),
+                target,
+            )
+            if key not in seen_edges:
+                edges.append(triple)
+                seen_edges.add(key)
+            nodes.add(target)
+            if not already_seen:
+                queue.append((target, depth + 1))
+
+    return nodes, edges
+
+
+def _corpus_ref(source: str, knowledge: Optional[KnowledgeStore]) -> Dict[str, Any]:
+    ref = {"ref_id": source}
+    if knowledge and ":" in source:
+        entry_id = source.split(":", 1)[1]
+        entry = knowledge.get(entry_id)
+        if entry:
+            ref["entry_id"] = entry_id
+            ref["title"] = getattr(entry, "title", "")
+    return ref
+
+
+def _slug(value: str, *, fallback: str = "workspace") -> str:
+    normalized = _normalize_entity_name(value)
+    slug = "-".join(part for part in normalized.split() if part)
+    return slug or fallback
 
 
 def build_concept_taxonomy(
