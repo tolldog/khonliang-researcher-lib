@@ -1,14 +1,14 @@
 # Repo Hygiene Audit
 
-Generated: 1776579548.271988
-Repo: `/mnt/dev/ttoll/dev/khonliang-researcher-lib`
+Generated: 2026-04-19T06:22:55Z
+Repo: `tolldog/khonliang-researcher-lib`
 
 ## Summary
 
 - 2 docs drift findings, 1 stale/deprecated findings, 3 proposed actions, 0 applied changes
 - Python files: 24
-- Test files: 12
-- Docs files: 2
+- Test files: 11
+- Docs files: 1
 
 ## Cleanup Plan
 
@@ -30,5 +30,5 @@ Repo: `/mnt/dev/ttoll/dev/khonliang-researcher-lib`
 
 ## Test Plan
 
-- `.venv/bin/python -m pytest -q`
-- `.venv/bin/python -m compileall .`
+- `python -m pytest -q`
+- `python -m compileall .`
