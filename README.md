@@ -63,7 +63,7 @@ graph = {
     ),
     "developer": EntityNode(name="developer"),
 }
-paths = trace_chain(graph, "researcher", max_depth=2)
+tree = trace_chain(graph, "researcher", max_depth=2)
 ```
 
 Build a domain-scoped research agent:
