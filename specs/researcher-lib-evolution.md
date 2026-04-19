@@ -426,13 +426,14 @@ researcher-lib (this plan)
 - Tests: test_agent.py with AgentTestHarness from bus-lib
 
 ### Phase 2: Refactor current researcher to extend BaseResearchAgent
-- `researcher/agent.py` changes from `BaseAgent.from_mcp()` wrapper to:
+- `researcher/agent.py` changes from app-local bus/MCP wiring to:
   ```python
   class DeveloperResearcher(BaseResearchAgent):
       domain = DomainConfig(name="developer", engines=["arxiv", ...], ...)
       # adds developer-specific skills on top of base
   ```
-- Developer-specific tools (ingest_github, scan_codebase, FR tools) stay in researcher
+- Developer-evidence tools (ingest_github, scan_codebase, concept exploration) stay in researcher
+- Active FR lifecycle stays in developer
 - Generic tools now come from BaseResearchAgent (inherited)
 - server.py (MCP entry point) stays as legacy/debug path
 
