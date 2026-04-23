@@ -20,11 +20,11 @@ _TABLE_SQL = {
     "ideas":  "SELECT COUNT(*) FROM ideas",
 }
 
-def count(self, table):
-    sql = self._TABLE_SQL.get(table)
+def _count_rows(self, table: str) -> int:
+    sql = _TABLE_SQL.get(table)
     if sql is None:
         raise ValueError(f"unknown table: {table!r}")
     return self.conn.execute(sql).fetchone()[0]
 ```
 
-**Rationale**: identifier names cannot be parameterized via `?` placeholders; the only safe construction is a fixed-set allowlist. Sourced from PR #16.
+**Rationale**: identifier names cannot be parameterized via `?` placeholders; the only safe construction is a fixed-set allowlist. Declare `_TABLE_SQL` at module level (the query strings are constants, not per-instance state) and read it directly — no `self._TABLE_SQL`. Sourced from PR #16.
