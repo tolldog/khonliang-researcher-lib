@@ -192,3 +192,46 @@ def test_identify_gap_candidates_respects_min_papers_threshold():
 
     assert len(gaps) == 1
     assert gaps[0].branch == "DR.002"
+
+
+def test_librarian_store_list_classifications_includes_universal_for_audience(tmp_path):
+    store = LibrarianStore(str(tmp_path / "librarian.db"))
+
+    store.upsert_classification(
+        PaperClassification(
+            paper_id="paper1",
+            classification_code="UNI.001",
+            audience_tags=["universal"],
+            confidence=0.8,
+            rationale="universal concept",
+            source_snapshot_id="snap1",
+        )
+    )
+
+    items = store.list_classifications(audience="developer-researcher")
+
+    assert len(items) == 1
+    assert items[0].classification_code == "UNI.001"
+
+
+def test_classify_paper_from_triples_returns_unclassified_when_no_matches():
+    taxonomy = {
+        "groups": [
+            {"code": "UNI.001", "label": "multi agent review", "audience": "universal"},
+        ],
+        "entity_groups": {
+            "Multi Agent Review": "UNI.001",
+        },
+    }
+    triples = [
+        FakeTriple("Unrelated Subject", "relates_to", "Unrelated Object", source="paper:p3"),
+    ]
+
+    result = classify_paper_from_triples("p3", triples, taxonomy)
+
+    assert result == {
+        "paper_id": "p3",
+        "status": "unclassified",
+        "reason": "no_taxonomy_entities_found",
+        "candidates": [],
+    }

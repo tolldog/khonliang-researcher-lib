@@ -192,7 +192,7 @@ class LibrarianStore:
         items = []
         for row in rows:
             tags = json.loads(row["audience_tags"])
-            if audience and audience not in tags:
+            if audience and audience not in tags and "universal" not in tags:
                 continue
             items.append(
                 PaperClassification(
@@ -415,8 +415,16 @@ class LibrarianStore:
         }
 
     def _count_rows(self, table: str) -> int:
+        queries = {
+            "librarian_neighborhood_snapshots": (
+                "SELECT COUNT(*) AS c FROM librarian_neighborhood_snapshots"
+            ),
+        }
+        query = queries.get(table)
+        if query is None:
+            raise ValueError(f"Unsupported table for row count: {table}")
         with self._conn() as conn:
-            row = conn.execute(f"SELECT COUNT(*) AS c FROM {table}").fetchone()
+            row = conn.execute(query).fetchone()
         return int(row["c"]) if row else 0
 
 
