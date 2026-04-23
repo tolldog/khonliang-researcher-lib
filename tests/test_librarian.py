@@ -117,6 +117,42 @@ def test_classify_paper_from_triples_returns_classification():
     assert "developer-researcher" in result["audience_tags"]
 
 
+def test_classify_paper_from_triples_accepts_prefixed_and_bare_paper_id():
+    """Callers may pass paper_id as either 'abc' or 'paper:abc'.
+
+    Document IDs elsewhere in the codebase are already-prefixed strings like
+    'paper:abc'. If classify_paper_from_triples blindly prepends 'paper:' to
+    an already-prefixed paper_id the source match becomes 'paper:paper:abc'
+    and silently fails to match anything -> bogus 'unclassified' result.
+    Both forms must produce identical classification output.
+    """
+    taxonomy = {
+        "groups": [
+            {"code": "UNI.001", "label": "multi agent review", "audience": "universal"},
+            {"code": "DR.001", "label": "multi agent code review", "audience": "developer-researcher"},
+        ],
+        "entity_groups": {
+            "Multi Agent Review": "UNI.001",
+            "Multi Agent Code Review": "DR.001",
+        },
+    }
+    triples = [
+        FakeTriple("Multi Agent Code Review", "specializes", "Multi Agent Review", source="paper:abc"),
+        FakeTriple("Multi Agent Code Review", "applies_to", "Pull Request", source="paper:abc"),
+    ]
+
+    bare = classify_paper_from_triples("abc", triples, taxonomy, audience="developer-researcher")
+    prefixed = classify_paper_from_triples("paper:abc", triples, taxonomy, audience="developer-researcher")
+
+    # Both forms must classify (pre-fix, prefixed would return 'unclassified').
+    assert bare["status"] == "classified"
+    assert prefixed["status"] == "classified"
+    # And they must agree on classification + audience tags + candidates.
+    assert bare["classification_code"] == prefixed["classification_code"]
+    assert bare["audience_tags"] == prefixed["audience_tags"]
+    assert bare["candidates"] == prefixed["candidates"]
+
+
 def test_classify_paper_from_triples_returns_ambiguity():
     taxonomy = {
         "groups": [

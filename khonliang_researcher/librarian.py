@@ -440,7 +440,11 @@ def classify_paper_from_triples(
     entity_groups = dict(taxonomy.get("entity_groups", {}))
     groups_by_code = {group["code"]: group for group in taxonomy.get("groups", [])}
     counts: dict[str, int] = {}
-    source_id = f"paper:{paper_id}"
+    # Accept both bare ("abc") and already-prefixed ("paper:abc") paper_id values.
+    # Document IDs elsewhere in the codebase are typically stored already-prefixed,
+    # so callers may pass either form. Double-prepending would produce a phantom
+    # "paper:paper:abc" source that silently matches nothing.
+    source_id = paper_id if paper_id.startswith("paper:") else f"paper:{paper_id}"
     total_hits = 0
 
     for triple in triples:
