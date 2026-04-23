@@ -94,6 +94,53 @@ def test_librarian_store_round_trips_ambiguity_gap_and_snapshot(tmp_path):
     assert snap.snapshot_id == "snap1"
 
 
+def test_health_summary_reports_open_ambiguity_count_distinct_from_total(tmp_path):
+    """health_summary()'s ambiguity count must reflect open-only, not total across
+    all statuses. The key name must make that scope explicit so callers cannot
+    mistake it for a cumulative count.
+    """
+    store = LibrarianStore(str(tmp_path / "librarian.db"))
+
+    # Log three ambiguities: two open, one already resolved. The resolved one
+    # must not inflate the "open" count reported in health_summary.
+    store.log_ambiguity(
+        AmbiguityRecord(
+            paper_id="paper_open_1",
+            candidates=[{"code": "DR.001", "score": 0.5}],
+            reason="close scores",
+        )
+    )
+    store.log_ambiguity(
+        AmbiguityRecord(
+            paper_id="paper_open_2",
+            candidates=[{"code": "DR.001", "score": 0.5}],
+            reason="close scores",
+        )
+    )
+    store.log_ambiguity(
+        AmbiguityRecord(
+            paper_id="paper_resolved",
+            candidates=[{"code": "DR.001", "score": 0.5}],
+            reason="close scores",
+            status="resolved",
+        )
+    )
+
+    # Sanity: the raw store sees all three, but only two as open.
+    assert len(store.list_ambiguities()) == 3
+    assert len(store.list_ambiguities(status="open")) == 2
+
+    health = store.health_summary(total_papers=10)
+
+    # New accurate key is present with the open-only count.
+    assert "open_ambiguity_count" in health
+    assert health["open_ambiguity_count"] == 2
+
+    # Old misleading key must not leak back in — it would hide the rename
+    # from consumers and re-introduce the ambiguity the rename fixed.
+    assert "ambiguous_count" not in health
+
+
 def test_classify_paper_from_triples_returns_classification():
     taxonomy = {
         "groups": [

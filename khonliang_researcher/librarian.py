@@ -408,7 +408,7 @@ class LibrarianStore:
             "total_papers": total_papers,
             "classified_count": classified_count,
             "coverage_pct": coverage_pct,
-            "ambiguous_count": len(ambiguities),
+            "open_ambiguity_count": len(ambiguities),
             "open_gap_count": len(gaps),
             "last_rebuilt_at": latest.rebuilt_at if latest else 0.0,
             "snapshot_count": self._count_rows("librarian_neighborhood_snapshots"),
