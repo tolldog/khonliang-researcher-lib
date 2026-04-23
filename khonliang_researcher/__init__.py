@@ -85,6 +85,15 @@ from khonliang_researcher.vector_index import (
     VectorIndex,
     reciprocal_rank_fusion,
 )
+from khonliang_researcher.librarian import (
+    AmbiguityRecord,
+    GapReport,
+    LibrarianStore,
+    NeighborhoodSnapshot,
+    PaperClassification,
+    classify_paper_from_triples,
+    identify_gap_candidates,
+)
 
 # Backward compatibility aliases
 ConceptNode = EntityNode
@@ -147,6 +156,14 @@ __all__ = [
     # Vector index + retrieval fusion
     "VectorIndex",
     "reciprocal_rank_fusion",
+    # Librarian
+    "AmbiguityRecord",
+    "GapReport",
+    "LibrarianStore",
+    "NeighborhoodSnapshot",
+    "PaperClassification",
+    "classify_paper_from_triples",
+    "identify_gap_candidates",
     # Backward compat
     "ConceptNode",
     "build_project_scores",
