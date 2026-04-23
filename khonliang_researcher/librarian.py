@@ -528,7 +528,6 @@ def identify_gap_candidates(
     """Identify lightly covered taxonomy groups from existing classifications."""
     group_counts: dict[str, int] = {}
     groups = taxonomy.get("groups", [])
-    code_to_group = {group["code"]: group for group in groups}
 
     for item in classifications:
         group_counts[item.classification_code] = group_counts.get(item.classification_code, 0) + 1
