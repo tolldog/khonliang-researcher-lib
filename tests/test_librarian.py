@@ -156,3 +156,39 @@ def test_identify_gap_candidates_returns_undercovered_groups():
 
     assert len(gaps) == 1
     assert gaps[0].branch == "DR.001"
+
+
+def test_identify_gap_candidates_respects_min_papers_threshold():
+    taxonomy = {
+        "groups": [
+            {"code": "DR.001", "label": "multi agent code review", "audience": "developer-researcher"},
+            {"code": "DR.002", "label": "tool schema loading", "audience": "developer-researcher"},
+        ]
+    }
+    classifications = [
+        PaperClassification(
+            paper_id="paper1",
+            classification_code="DR.001",
+            audience_tags=["developer-researcher"],
+        ),
+        PaperClassification(
+            paper_id="paper2",
+            classification_code="DR.001",
+            audience_tags=["developer-researcher"],
+        ),
+        PaperClassification(
+            paper_id="paper3",
+            classification_code="DR.002",
+            audience_tags=["developer-researcher"],
+        ),
+    ]
+
+    gaps = identify_gap_candidates(
+        taxonomy,
+        classifications,
+        audience="developer-researcher",
+        min_papers=2,
+    )
+
+    assert len(gaps) == 1
+    assert gaps[0].branch == "DR.002"
