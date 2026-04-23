@@ -470,24 +470,31 @@ def classify_paper_from_triples(
     for code, count in ranked:
         group = groups_by_code.get(code, {})
         score = count / total_hits if total_hits else 0.0
+        # Preserve the unrounded score as the canonical value used for all
+        # downstream comparisons (ambiguity margin, confidence, audience tag
+        # inclusion). Rounding happens only at display/projection time so
+        # near-boundary cases are not reclassified by display precision.
         candidates.append(
             {
                 "code": code,
                 "label": group.get("label", code),
                 "audience": group.get("audience", ""),
-                "score": round(score, 4),
+                "score": score,
                 "count": count,
             }
         )
 
     top = candidates[0]
     second = candidates[1]["score"] if len(candidates) > 1 else 0.0
+    projected_candidates = [
+        {**candidate, "score": round(candidate["score"], 4)} for candidate in candidates
+    ]
     if len(candidates) > 1 and (top["score"] - second) < ambiguity_margin:
         return {
             "paper_id": paper_id,
             "status": "ambiguous",
             "reason": "close_classification_scores",
-            "candidates": candidates,
+            "candidates": projected_candidates,
         }
 
     return {
@@ -505,9 +512,9 @@ def classify_paper_from_triples(
             }
             - {""}
         ),
-        "confidence": top["score"],
+        "confidence": round(top["score"], 4),
         "rationale": f"classified from {total_hits} taxonomy-linked triple hits",
-        "candidates": candidates,
+        "candidates": projected_candidates,
     }
 
 

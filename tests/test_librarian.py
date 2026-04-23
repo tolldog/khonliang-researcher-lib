@@ -139,6 +139,51 @@ def test_classify_paper_from_triples_returns_ambiguity():
     assert len(result["candidates"]) == 2
 
 
+def test_classify_preserves_unrounded_score_for_ambiguity_check():
+    """Ambiguity detection must use the unrounded score, not a rounded projection.
+
+    With counts (4, 3) over total_hits=7 the raw scores are 4/7 and 3/7, whose
+    real diff is ~0.14285714. Rounded to 4 decimals the scores become 0.5714
+    and 0.4286 with diff 0.1428. At ambiguity_margin=0.14284:
+      - unrounded diff (0.14285714) >= margin -> NOT ambiguous (correct)
+      - rounded-first diff (0.1428)    <  margin -> ambiguous (bug)
+    The test asserts the correct (unrounded) outcome: classified, not ambiguous.
+    """
+    taxonomy = {
+        "groups": [
+            {"code": "GEN.001", "label": "code review", "audience": "general"},
+            {"code": "GEN.002", "label": "prompt caching", "audience": "general"},
+        ],
+        "entity_groups": {
+            "Code Review": "GEN.001",
+            "Prompt Caching": "GEN.002",
+        },
+    }
+    # 4 triples contribute one GEN.001 hit each (subject Code Review, object unmapped).
+    # 3 triples contribute one GEN.002 hit each (subject Prompt Caching, object unmapped).
+    # Totals: GEN.001=4, GEN.002=3, total_hits=7 -> raw scores 4/7 and 3/7.
+    triples = [
+        FakeTriple("Code Review", "covers", "Topic A", source="paper:p4"),
+        FakeTriple("Code Review", "covers", "Topic B", source="paper:p4"),
+        FakeTriple("Code Review", "covers", "Topic C", source="paper:p4"),
+        FakeTriple("Code Review", "covers", "Topic D", source="paper:p4"),
+        FakeTriple("Prompt Caching", "covers", "Topic E", source="paper:p4"),
+        FakeTriple("Prompt Caching", "covers", "Topic F", source="paper:p4"),
+        FakeTriple("Prompt Caching", "covers", "Topic G", source="paper:p4"),
+    ]
+
+    result = classify_paper_from_triples(
+        "p4", triples, taxonomy, ambiguity_margin=0.14284
+    )
+
+    # Correct (unrounded) outcome: real diff 0.14285714 >= margin 0.14284 -> classified.
+    assert result["status"] == "classified", result
+    assert result["classification_code"] == "GEN.001"
+    # Display-layer rounding is still applied to the returned candidates.
+    assert result["candidates"][0]["score"] == pytest.approx(0.5714)
+    assert result["candidates"][1]["score"] == pytest.approx(0.4286)
+
+
 def test_identify_gap_candidates_returns_undercovered_groups():
     taxonomy = {
         "groups": [
