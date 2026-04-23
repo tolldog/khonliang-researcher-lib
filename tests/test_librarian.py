@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import pytest
+
 from khonliang_researcher.librarian import (
     AmbiguityRecord,
     GapReport,
@@ -212,6 +214,16 @@ def test_librarian_store_list_classifications_includes_universal_for_audience(tm
 
     assert len(items) == 1
     assert items[0].classification_code == "UNI.001"
+
+
+def test_librarian_store_count_rows_rejects_unknown_table_name(tmp_path):
+    store = LibrarianStore(str(tmp_path / "librarian.db"))
+
+    with pytest.raises(ValueError, match="Unsupported table"):
+        store._count_rows("librarian_paper_catalog; DROP TABLE --")
+
+    with pytest.raises(ValueError, match="Unsupported table"):
+        store._count_rows("librarian_paper_catalog")
 
 
 def test_classify_paper_from_triples_returns_unclassified_when_no_matches():
