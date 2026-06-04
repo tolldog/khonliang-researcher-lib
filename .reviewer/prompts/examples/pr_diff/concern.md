@@ -20,12 +20,15 @@ query.
 
 ## allowlist_sql_tables
 
-SQL where a table name is derived from a parameter must use an allowlist
-mapping (name → fixed SQL), **not** f-string interpolation. Even if every
-current caller passes a constant, the API is a latent injection vector.
+SQL where a table name is derived from a parameter must not interpolate
+**unchecked** identifiers. Safe patterns include either an allowlist mapping
+(name → fixed SQL) or strict identifier validation (e.g., `[A-Za-z_][A-Za-z0-9_]*`)
+before interpolation.
 
 - Bad: `cur.execute(f"SELECT * FROM {table}")`
 - Good: `sql = TABLE_SQL[table]  # KeyError on unknown table` then `cur.execute(sql)`
+  or validate first (`if not SAFE_IDENTIFIER.match(table): raise ValueError(...)`)
+  then interpolate the validated identifier.
 
 ## prefix_idempotency
 
