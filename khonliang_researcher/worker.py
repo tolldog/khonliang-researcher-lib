@@ -7,17 +7,49 @@ Features:
   - Retry tracking per item with configurable max retries
   - Consecutive failure detection with automatic pause
   - Configurable pause between items and idle polling
-  - Stats tracking (processed, failed, skipped, duration)
+  - Stats tracking (processed, failed, skipped, declined, duration)
   - Batch mode (process N items then stop) or continuous mode
+
+process_item outcomes:
+  - True   → success (counts as ``processed``)
+  - False  → failure (retried; counts as ``failed``, then ``skipped`` once
+             ``max_retries_per_item`` is exhausted)
+  - SKIP   → declined cleanly, no work done (counts as ``declined`` — NOT a
+             success and NOT a failure). Return the module-level ``SKIP``
+             sentinel. Use for cases like a sibling
+             worker having claimed the item in a race, where counting it as
+             processed over-reports throughput and counting it as failed would
+             wrongly trigger retries / consecutive-failure pauses.
 """
 
 import asyncio
 import logging
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 logger = logging.getLogger(__name__)
+
+
+class _Skip:
+    """Sentinel returned by ``process_item`` to decline an item without counting
+    it as processed or failed. A distinct object (not ``None``/``False``) so the
+    skip branch can't be reached by an accidental falsy return."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - debug aid
+        return "SKIP"
+
+    def __bool__(self) -> bool:  # pragma: no cover - defensive
+        return False
+
+
+#: Return this from ``process_item`` to decline an item (see module docstring).
+SKIP = _Skip()
+
+#: Return type of ``process_item``: bool (success/failure) or the SKIP sentinel.
+ProcessOutcome = Union[bool, _Skip]
 
 
 class BaseQueueWorker(ABC):
@@ -40,6 +72,7 @@ class BaseQueueWorker(ABC):
             "processed": 0,
             "failed": 0,
             "skipped": 0,
+            "declined": 0,
             "started_at": None,
         }
 
@@ -56,8 +89,12 @@ class BaseQueueWorker(ABC):
         """
 
     @abstractmethod
-    async def process_item(self, item: Any) -> bool:
-        """Process a single item. Return True on success, False on failure."""
+    async def process_item(self, item: Any) -> "ProcessOutcome":
+        """Process a single item.
+
+        Return ``True`` on success, ``False`` on failure (item is retried), or
+        the module-level ``SKIP`` sentinel to decline the item without counting
+        it as processed or failed (see module docstring)."""
 
     @property
     def stats(self) -> dict:
@@ -96,9 +133,18 @@ class BaseQueueWorker(ABC):
             )
 
             try:
-                success = await self.process_item(item)
+                outcome = await self.process_item(item)
 
-                if success:
+                if outcome is SKIP:
+                    # Declined cleanly — no work done. Neither processed nor
+                    # failed: don't bump retries. Reset consecutive_failures like
+                    # a success does — a decline breaks a failure streak, else a
+                    # (fail, decline, fail) sequence would wrongly trip the
+                    # max_failures pause as if the failures were consecutive.
+                    self._stats["declined"] += 1
+                    consecutive_failures = 0
+                    logger.info("  DECLINED (skip): %s", str(item_title)[:60])
+                elif outcome:
                     self._stats["processed"] += 1
                     consecutive_failures = 0
                 else:
@@ -133,10 +179,11 @@ class BaseQueueWorker(ABC):
                 await asyncio.sleep(self.pause_between)
 
         logger.info(
-            "Worker stopped. Processed: %d, Failed: %d, Skipped: %d",
+            "Worker stopped. Processed: %d, Failed: %d, Skipped: %d, Declined: %d",
             self._stats["processed"],
             self._stats["failed"],
             self._stats["skipped"],
+            self._stats["declined"],
         )
 
     def stop(self):
@@ -165,8 +212,19 @@ class BaseQueueWorker(ABC):
             logger.info("[%d/%d] %s", count, target, str(item_title)[:60])
 
             try:
-                success = await self.process_item(item)
-                if success:
+                outcome = await self.process_item(item)
+                if outcome is SKIP:
+                    # Declined cleanly — no work done: neither processed nor
+                    # failed (no retry bump). ``count`` still advances (it bounds
+                    # the loop by items dequeued): a decline deliberately consumes
+                    # a batch slot. Rolling ``count`` back would let a re-yielding
+                    # get_next spin run_batch(limit=N) forever, a worse regression
+                    # than an occasional short batch; declines are rare
+                    # (lock-contention race) and the declined item leaves the
+                    # queue, so slot consumption is negligible.
+                    self._stats["declined"] += 1
+                    logger.info("  DECLINED (skip): %s", str(item_title)[:60])
+                elif outcome:
                     self._stats["processed"] += 1
                 else:
                     self._failed_ids[item_id] = self._failed_ids.get(item_id, 0) + 1
